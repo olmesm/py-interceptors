@@ -1,0 +1,9 @@
+src = ["src"]
+
+[lint]
+extend-select = [
+    "B",
+    "I",
+    "RUF",
+    "UP",
+]
