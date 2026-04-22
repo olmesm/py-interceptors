@@ -7,12 +7,15 @@ def test_fastapi_pipeline_creates_order() -> None:
     app = example.create_app()
 
     with TestClient(app) as client:
+        runtime = example.get_runtime(app)
+        assert len(runtime._compiled_plans) == 1
+        assert runtime._async_portals == {}
+
         response = client.post(
             "/orders",
             headers={"Authorization": "Bearer secret-token"},
             json={"item_id": "sku-123", "quantity": 2},
         )
-        runtime = example.get_runtime(app)
         portal_thread = runtime._async_portals["fastapi-order"]._thread
 
         assert portal_thread.name == "fastapi-order"

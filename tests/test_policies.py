@@ -225,6 +225,27 @@ def test_runtime_async_context_manager_shuts_down_on_exception() -> None:
     assert not portal_thread.is_alive()
 
 
+def test_runtime_async_lifecycle_methods_shutdown_isolated_portals() -> None:
+    workflow: Chain[Work, Work] = (
+        Chain("isolated").use(RecordAsyncPortal).on(AsyncPolicy("io", isolated=True))
+    )
+
+    async def run() -> tuple[Runtime, threading.Thread]:
+        runtime = Runtime()
+        await runtime.startup()
+        result = await runtime.run_async(workflow, Work(1, [], []))
+        portal_thread = runtime._async_portals["io"]._thread
+        assert result.thread_names == ["io"]
+        assert portal_thread.is_alive()
+        await runtime.shutdown_async()
+        return runtime, portal_thread
+
+    runtime, portal_thread = asyncio.run(run())
+
+    assert runtime._async_portals == {}
+    assert not portal_thread.is_alive()
+
+
 def test_thread_policy_runs_sync_enter_leave_and_error_on_named_lane() -> None:
     runtime = Runtime()
     happy: Chain[PolicyTrace, PolicyTrace] = Chain("happy").use(

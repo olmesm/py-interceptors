@@ -139,13 +139,19 @@ def get_runtime(app: FastAPI) -> Runtime:
 def create_app(runtime: Runtime | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        owns_runtime = runtime is None
         workflow_runtime = runtime or Runtime()
+        if owns_runtime:
+            await workflow_runtime.startup()
+
+        workflow_runtime.compile(workflow, initial=ApiContext)
         app.state.workflow_runtime = workflow_runtime
+
         try:
             yield
         finally:
-            if runtime is None:
-                workflow_runtime.shutdown()
+            if owns_runtime:
+                await workflow_runtime.shutdown_async()
 
     app = FastAPI(lifespan=lifespan)
 

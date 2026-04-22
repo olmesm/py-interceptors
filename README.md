@@ -359,6 +359,23 @@ payload type reuse it. Compilation does not instantiate interceptors or create
 thread pools, thread lanes, or isolated async portals; those resources are still
 created lazily during execution.
 
+For application frameworks with async lifecycles, `Runtime` also exposes
+`startup()` and `shutdown_async()`:
+
+```python
+runtime = Runtime()
+await runtime.startup()
+runtime.compile(workflow, initial=CitiesContext)
+
+try:
+    result = await runtime.run_async(workflow, CitiesContext(cities=["Madrid"]))
+finally:
+    await runtime.shutdown_async()
+```
+
+`startup()` does not eagerly create execution resources. It provides a stable
+lifecycle hook for integrations such as FastAPI lifespan handlers.
+
 ## Policies
 
 Policies define where code runs, not what it does.

@@ -155,6 +155,18 @@ class Runtime:
         self._observers.append(observer)
         return self
 
+    async def startup(self) -> None:
+        """
+        Application lifecycle hook.
+
+        Runtime resources are still created lazily during execution. This hook
+        exists so framework integrations can use one consistent startup/shutdown
+        shape today, and so future eager resource preparation has a stable home.
+        """
+
+    async def shutdown_async(self, wait: bool = True) -> None:
+        await asyncio.to_thread(self.shutdown, wait)
+
     def __enter__(self) -> Self:
         return self
 
@@ -167,6 +179,7 @@ class Runtime:
         self.shutdown()
 
     async def __aenter__(self) -> Self:
+        await self.startup()
         return self
 
     async def __aexit__(
@@ -175,7 +188,7 @@ class Runtime:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self.shutdown()
+        await self.shutdown_async()
 
     def compile[TIn, TOut](
         self,
