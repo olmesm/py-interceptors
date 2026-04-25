@@ -27,6 +27,8 @@ def _portal_name(value: str | Portal, policy_name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionPolicy:
+    """Base data shape for named execution policies."""
+
     name: str
 
 
@@ -34,6 +36,8 @@ class ExecutionPolicy:
 class ThreadPolicy(ExecutionPolicy):
     """
     Named single-thread execution lane with affinity/resume semantics.
+
+    Chains using the same policy name share one runtime-owned worker lane.
     """
 
     def __init__(self, name: str | Portal) -> None:
@@ -63,6 +67,7 @@ class AsyncPolicy:
     Default/main async runtime when name is None.
 
     Named isolated async portals are owned and reused by each Runtime instance.
+    ``isolated=True`` requires a non-empty name.
     """
 
     name: str | None = None

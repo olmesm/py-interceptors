@@ -14,6 +14,13 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class CompiledPlan[TIn, TOut]:
+    """
+    Validated executable workflow plan.
+
+    Plans are produced by ``Runtime.compile(...)`` and keep the validated root
+    chain, input/output type specs, and whether async execution is required.
+    """
+
     runtime: Runtime
     root: Chain[TIn, TOut]
     input_spec: TypeSpec
@@ -21,6 +28,7 @@ class CompiledPlan[TIn, TOut]:
     is_async: bool
 
     def run_sync(self, payload: TIn) -> TOut:
+        """Run this plan synchronously when it contains no async work."""
         if self.is_async:
             raise ExecutionError(
                 "This plan contains async segments or async steps; use run_async(...)"
@@ -29,6 +37,7 @@ class CompiledPlan[TIn, TOut]:
         return self.runtime._run_chain_sync(self.root, payload, None)
 
     async def run_async(self, payload: TIn) -> TOut:
+        """Run this plan asynchronously."""
         self._validate_payload(payload)
         return await self.runtime._run_chain_async(self.root, payload, None)
 

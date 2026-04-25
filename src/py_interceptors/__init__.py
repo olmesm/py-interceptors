@@ -1,3 +1,5 @@
+"""Public API for composing and running typed interceptor workflows."""
+
 from py_interceptors.chains import Chain, StreamChain, chain, stream_chain
 from py_interceptors.errors import CompilationError, ExecutionError, ValidationError
 from py_interceptors.interceptors import Context, Interceptor, StreamInterceptor

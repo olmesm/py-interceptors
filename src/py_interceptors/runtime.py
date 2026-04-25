@@ -35,6 +35,13 @@ type _CompileCacheKey = tuple[Chain[Any, Any], TypeSpec | None]
 
 @dataclass(frozen=True, slots=True)
 class ExecutionEvent:
+    """
+    Observer payload emitted after each interceptor stage.
+
+    Events include the execution id, current chain path, stage name, step name,
+    effective policy label, thread name, elapsed time, and optional error.
+    """
+
     execution_id: int
     chain: str
     path: tuple[str, ...]
@@ -101,6 +108,30 @@ class _AsyncPortalRunner:
 
 @dataclass(slots=True)
 class Runtime:
+    """
+    Validate, compile, and execute interceptor workflows.
+
+    Use one ``Runtime`` per application boundary or test. The runtime owns
+    compiled-plan caches, observer callbacks, thread pools, thread lanes, and
+    isolated async portals.
+
+    Example:
+        >>> from py_interceptors import Interceptor, Runtime, chain
+        >>>
+        >>> class Increment(Interceptor[int, int]):
+        ...     input_type = int
+        ...     output_type = int
+        ...
+        ...     def enter(self, ctx: int) -> int:
+        ...         return ctx + 1
+        ...
+        >>> workflow = chain("increment").use(Increment).build()
+        >>> with Runtime() as runtime:
+        ...     result = runtime.run_sync(workflow, 41)
+        >>> result
+        42
+    """
+
     _thread_lanes: dict[str, ThreadPoolExecutor] = field(default_factory=dict)
     _thread_pools: dict[str, ThreadPoolExecutor] = field(default_factory=dict)
     _async_portals: dict[str, _AsyncPortalRunner] = field(default_factory=dict)
@@ -149,9 +180,11 @@ class Runtime:
     def validate(
         self, chain: Chain[Any, Any], initial: TypeSpec | None = None
     ) -> TypeSpec:
+        """Validate ``chain`` and return its output type."""
         return _validate_chain(chain, initial)
 
     def add_observer(self, observer: Observer) -> Self:
+        """Register an observer callback and return this runtime."""
         self._observers.append(observer)
         return self
 
@@ -165,6 +198,7 @@ class Runtime:
         """
 
     async def shutdown_async(self, wait: bool = True) -> None:
+        """Shutdown runtime-owned resources from async code."""
         await asyncio.to_thread(self.shutdown, wait)
 
     def __enter__(self) -> Self:
@@ -196,6 +230,7 @@ class Runtime:
         *,
         initial: TypeSpec | None = None,
     ) -> CompiledPlan[TIn, TOut]:
+        """Validate and cache an executable plan for ``chain``."""
         cache_key = self._compile_cache_key(chain, initial)
         if cache_key is None:
             return self._compile_uncached(chain, initial)
@@ -246,14 +281,17 @@ class Runtime:
     async def run_async[TIn, TOut](
         self, chain: Chain[TIn, TOut], payload: TIn
     ) -> TOut:
+        """Compile if needed, then execute ``chain`` asynchronously."""
         plan = self.compile(chain, initial=type(payload))
         return await plan.run_async(payload)
 
     def run_sync[TIn, TOut](self, chain: Chain[TIn, TOut], payload: TIn) -> TOut:
+        """Compile if needed, then execute a sync-only ``chain``."""
         plan = self.compile(chain, initial=type(payload))
         return plan.run_sync(payload)
 
     def get_executor(self, policy: ThreadPolicy | ThreadPoolPolicy) -> Executor:
+        """Return the runtime-owned executor for a thread policy."""
         if isinstance(policy, ThreadPolicy):
             executor = self._thread_lanes.get(policy.name)
             if executor is None:
@@ -273,6 +311,7 @@ class Runtime:
         return executor
 
     def get_async_portal(self, policy: AsyncPolicy) -> _AsyncPortalRunner:
+        """Return the runtime-owned isolated async portal for ``policy``."""
         if policy.name is None:
             raise ExecutionError("Isolated AsyncPolicy requires a named portal")
 
@@ -283,6 +322,7 @@ class Runtime:
         return portal
 
     def shutdown(self, wait: bool = True) -> None:
+        """Shutdown runtime-owned resources and clear compiled-plan caches."""
         for portal in self._async_portals.values():
             portal.shutdown(wait=wait)
         for executor in self._thread_lanes.values():
