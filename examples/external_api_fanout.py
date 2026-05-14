@@ -57,9 +57,7 @@ class SplitCustomerIds(
         profiles = sorted(items, key=lambda profile: profile.customer_id)
         return CustomerReport(
             profiles=profiles,
-            premium_count=sum(
-                1 for profile in profiles if profile.tier == "premium"
-            ),
+            premium_count=sum(1 for profile in profiles if profile.tier == "premium"),
         )
 
 
@@ -83,17 +81,11 @@ class FetchCustomerProfile(Interceptor[CustomerId, CustomerProfile]):
 customer_api = AsyncPolicy("customer-api", isolated=True)
 
 fetch_customer = (
-    chain("fetch customer profile")
-    .use(FetchCustomerProfile)
-    .on(customer_api)
-    .build()
+    chain("fetch customer profile").use(FetchCustomerProfile).on(customer_api).build()
 )
 
 fanout_stage = (
-    stream_chain("customer fanout")
-    .stream(SplitCustomerIds)
-    .map(fetch_customer)
-    .build()
+    stream_chain("customer fanout").stream(SplitCustomerIds).map(fetch_customer).build()
 )
 
 workflow = chain("customer report").use(fanout_stage).build()

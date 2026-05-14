@@ -204,8 +204,8 @@ def test_runtime_compile_caches_plan_per_workflow_and_initial() -> None:
 
 
 def test_runtime_run_async_reuses_precompiled_plan() -> None:
-    workflow: Chain[Start, Added] = Chain("async math").use(AsyncAddOne).on(
-        AsyncPolicy()
+    workflow: Chain[Start, Added] = (
+        Chain("async math").use(AsyncAddOne).on(AsyncPolicy())
     )
     runtime = Runtime()
 
@@ -242,8 +242,8 @@ def test_chain_validation_fails_on_wrong_order() -> None:
 
 
 def test_async_step_requires_async_execution() -> None:
-    workflow: Chain[Start, Added] = Chain("async math").use(AsyncAddOne).on(
-        AsyncPolicy()
+    workflow: Chain[Start, Added] = (
+        Chain("async math").use(AsyncAddOne).on(AsyncPolicy())
     )
     runtime = Runtime()
 
@@ -255,8 +255,8 @@ def test_async_step_requires_async_execution() -> None:
 
 
 def test_chain_runs_async() -> None:
-    workflow: Chain[Start, Added] = Chain("async math").use(AsyncAddOne).on(
-        AsyncPolicy()
+    workflow: Chain[Start, Added] = (
+        Chain("async math").use(AsyncAddOne).on(AsyncPolicy())
     )
     runtime = Runtime()
 
@@ -310,9 +310,7 @@ def test_handled_error_resumes_remaining_leave_stack() -> None:
 
 
 def test_unhandled_error_continues_error_unwind_and_raises() -> None:
-    workflow: Chain[Trace, Trace] = Chain("trace").use(ErrorReraiser).use(
-        FailingTrace
-    )
+    workflow: Chain[Trace, Trace] = Chain("trace").use(ErrorReraiser).use(FailingTrace)
     runtime = Runtime()
     ctx = Trace(events=[])
 
@@ -341,8 +339,8 @@ def test_leave_error_enters_error_unwind() -> None:
 
 
 def test_async_step_can_run_on_thread_policy_via_async_runtime() -> None:
-    workflow: Chain[Trace, Trace] = Chain("trace").use(AsyncThreadTrace).on(
-        ThreadPolicy("async-lane")
+    workflow: Chain[Trace, Trace] = (
+        Chain("trace").use(AsyncThreadTrace).on(ThreadPolicy("async-lane"))
     )
     runtime = Runtime()
 

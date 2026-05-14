@@ -62,9 +62,7 @@ class ChunkCities(
     ) -> DataFrameContext:
         countries = [country for chunk in items for country in chunk]
 
-        return DataFrameContext(
-            df=ctx.df.with_columns(pl.Series("country", countries))
-        )
+        return DataFrameContext(df=ctx.df.with_columns(pl.Series("country", countries)))
 
 
 class FetchCountries(Interceptor[list[str], list[str]]):
@@ -110,9 +108,7 @@ class GroupByContinent(Interceptor[DataFrameContext, FinalContext]):
         )
 
         grouped = (
-            df.group_by("continent")
-            .agg(pl.len().alias("city_count"))
-            .sort("continent")
+            df.group_by("continent").agg(pl.len().alias("city_count")).sort("continent")
         )
 
         return FinalContext(df=grouped)
@@ -121,15 +117,10 @@ class GroupByContinent(Interceptor[DataFrameContext, FinalContext]):
 thread_main = ThreadPolicy("main")
 async_io = AsyncPolicy()
 
-enrich_countries = (
-    chain("fetch countries").use(FetchCountries).on(async_io).build()
-)
+enrich_countries = chain("fetch countries").use(FetchCountries).on(async_io).build()
 
 chunk_cities = (
-    stream_chain("chunk cities")
-    .stream(ChunkCities)
-    .map(enrich_countries)
-    .build()
+    stream_chain("chunk cities").stream(ChunkCities).map(enrich_countries).build()
 )
 
 workflow = (
