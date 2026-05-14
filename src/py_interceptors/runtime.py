@@ -290,6 +290,46 @@ class Runtime:
         plan = self.compile(chain, initial=type(payload))
         return plan.run_sync(payload)
 
+    def run_blocking[TIn, TOut](
+        self,
+        chain: Chain[TIn, TOut],
+        payload: TIn,
+    ) -> TOut:
+        """
+        Drive an async-capable ``chain`` from a sync caller that has no event loop.
+
+        Intended for sync entry points that live on a worker thread, such as a
+        synchronous FastAPI route or a sync framework worker. The chain runs on
+        a long-lived runtime-owned event loop and the calling thread blocks on
+        the result. Thread-policy segments still bounce out to their lanes via
+        ``run_in_executor``; async segments run on the runtime portal loop.
+
+        Raises ``ExecutionError`` if called from inside a running event loop.
+        For async callers, use ``run_async`` instead.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise ExecutionError(
+                "run_blocking cannot be called from inside a running event loop; "
+                "use run_async instead"
+            )
+
+        plan = self.compile(chain, initial=type(payload))
+        portal = self._get_default_portal()
+        future = portal.submit(plan.run_async(payload))
+        return future.result()
+
+    def _get_default_portal(self) -> _AsyncPortalRunner:
+        name = "py-interceptors-default"
+        portal = self._async_portals.get(name)
+        if portal is None:
+            portal = _AsyncPortalRunner(name)
+            self._async_portals[name] = portal
+        return portal
+
     def get_executor(self, policy: ThreadPolicy | ThreadPoolPolicy) -> Executor:
         """Return the runtime-owned executor for a thread policy."""
         if isinstance(policy, ThreadPolicy):
