@@ -118,12 +118,7 @@ def test_chain_builder_infers_types_and_runs() -> None:
 
 
 def test_stream_chain_builder_infers_types_and_runs() -> None:
-    per_item = (
-        chain("square")
-        .use(Square)
-        .on(ThreadPolicy("builder-worker"))
-        .build()
-    )
+    per_item = chain("square").use(Square).on(ThreadPolicy("builder-worker")).build()
     assert_type(per_item, Chain[NumberItem, SquaredItem])
 
     stream_stage = (

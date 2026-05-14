@@ -49,7 +49,9 @@ class RecordLifecycle(Interceptor[PolicyTrace, PolicyTrace]):
         return ctx
 
     def error(self, ctx: PolicyTrace, err: Exception) -> PolicyTrace:
-        ctx.events.append((f"error:{type(err).__name__}", threading.current_thread().name))
+        ctx.events.append(
+            (f"error:{type(err).__name__}", threading.current_thread().name)
+        )
         return ctx
 
 
@@ -140,11 +142,11 @@ class FailingAsyncPortal(Interceptor[Work, Work]):
 
 def test_policies_accept_portal_identity() -> None:
     portal = Portal("shared")
-    inner: Chain[Work, Work] = Chain("inner").use(Identity).on(
-        ThreadPoolPolicy(portal, workers=2)
+    inner: Chain[Work, Work] = (
+        Chain("inner").use(Identity).on(ThreadPoolPolicy(portal, workers=2))
     )
-    workflow: Chain[Work, Work] = Chain[Work, Work]("outer").use(inner).on(
-        ThreadPoolPolicy("shared", workers=2)
+    workflow: Chain[Work, Work] = (
+        Chain[Work, Work]("outer").use(inner).on(ThreadPoolPolicy("shared", workers=2))
     )
 
     compiled = Runtime().compile(workflow, initial=Work)
@@ -154,8 +156,8 @@ def test_policies_accept_portal_identity() -> None:
 
 
 def test_runtime_sync_context_manager_shuts_down_thread_resources() -> None:
-    workflow: Chain[Work, Work] = Chain("identity").use(Identity).on(
-        ThreadPolicy("lane")
+    workflow: Chain[Work, Work] = (
+        Chain("identity").use(Identity).on(ThreadPolicy("lane"))
     )
 
     with Runtime() as runtime:
@@ -167,8 +169,8 @@ def test_runtime_sync_context_manager_shuts_down_thread_resources() -> None:
 
 
 def test_runtime_sync_context_manager_shuts_down_on_exception() -> None:
-    workflow: Chain[Work, Work] = Chain("identity").use(Identity).on(
-        ThreadPolicy("lane")
+    workflow: Chain[Work, Work] = (
+        Chain("identity").use(Identity).on(ThreadPolicy("lane"))
     )
     runtime: Runtime | None = None
 
@@ -248,17 +250,11 @@ def test_runtime_async_lifecycle_methods_shutdown_isolated_portals() -> None:
 
 def test_thread_policy_runs_sync_enter_leave_and_error_on_named_lane() -> None:
     runtime = Runtime()
-    happy: Chain[PolicyTrace, PolicyTrace] = Chain("happy").use(
-        RecordLifecycle
-    ).on(
-        ThreadPolicy("lane")
+    happy: Chain[PolicyTrace, PolicyTrace] = (
+        Chain("happy").use(RecordLifecycle).on(ThreadPolicy("lane"))
     )
-    failing: Chain[PolicyTrace, PolicyTrace] = Chain("failing").use(
-        RecordLifecycle
-    ).use(
-        FailEnter
-    ).on(
-        ThreadPolicy("lane")
+    failing: Chain[PolicyTrace, PolicyTrace] = (
+        Chain("failing").use(RecordLifecycle).use(FailEnter).on(ThreadPolicy("lane"))
     )
 
     try:
@@ -277,10 +273,8 @@ def test_thread_policy_runs_sync_enter_leave_and_error_on_named_lane() -> None:
 
 def test_thread_policy_nested_same_lane_does_not_deadlock_with_timeout() -> None:
     runtime = Runtime()
-    inner: Chain[PolicyTrace, PolicyTrace] = Chain("inner").use(
-        InnerLaneRecord
-    ).on(
-        ThreadPolicy("lane")
+    inner: Chain[PolicyTrace, PolicyTrace] = (
+        Chain("inner").use(InnerLaneRecord).on(ThreadPolicy("lane"))
     )
     workflow: Chain[PolicyTrace, PolicyTrace] = (
         Chain[PolicyTrace, PolicyTrace]("outer")
@@ -306,10 +300,8 @@ def test_thread_policy_nested_same_lane_does_not_deadlock_with_timeout() -> None
 
 def test_thread_policy_nested_different_lanes_switches_threads() -> None:
     runtime = Runtime()
-    inner: Chain[PolicyTrace, PolicyTrace] = Chain("inner").use(
-        InnerLaneRecord
-    ).on(
-        ThreadPolicy("B")
+    inner: Chain[PolicyTrace, PolicyTrace] = (
+        Chain("inner").use(InnerLaneRecord).on(ThreadPolicy("B"))
     )
     workflow: Chain[PolicyTrace, PolicyTrace] = (
         Chain[PolicyTrace, PolicyTrace]("outer")
@@ -333,10 +325,8 @@ def test_thread_policy_nested_different_lanes_switches_threads() -> None:
 
 def test_thread_policy_resumes_after_default_async_chain() -> None:
     runtime = Runtime()
-    async_inner: Chain[PolicyTrace, PolicyTrace] = Chain("async").use(
-        AsyncDefaultRecord
-    ).on(
-        AsyncPolicy()
+    async_inner: Chain[PolicyTrace, PolicyTrace] = (
+        Chain("async").use(AsyncDefaultRecord).on(AsyncPolicy())
     )
     workflow: Chain[PolicyTrace, PolicyTrace] = (
         Chain[PolicyTrace, PolicyTrace]("outer")
@@ -363,11 +353,11 @@ def test_thread_policy_resumes_after_default_async_chain() -> None:
 
 
 def test_compile_rejects_thread_pool_worker_conflict() -> None:
-    first: Chain[Work, Work] = Chain("first").use(Identity).on(
-        ThreadPoolPolicy("shared", workers=2)
+    first: Chain[Work, Work] = (
+        Chain("first").use(Identity).on(ThreadPoolPolicy("shared", workers=2))
     )
-    second: Chain[Work, Work] = Chain("second").use(Identity).on(
-        ThreadPoolPolicy("shared", workers=3)
+    second: Chain[Work, Work] = (
+        Chain("second").use(Identity).on(ThreadPoolPolicy("shared", workers=3))
     )
     workflow: Chain[Work, Work] = Chain[Work, Work]("workflow").use(first).use(second)
 
@@ -376,11 +366,9 @@ def test_compile_rejects_thread_pool_worker_conflict() -> None:
 
 
 def test_compile_rejects_policy_kind_conflict() -> None:
-    inner: Chain[Work, Work] = Chain("inner").use(Identity).on(
-        ThreadPolicy("shared")
-    )
-    workflow: Chain[Work, Work] = Chain[Work, Work]("outer").use(inner).on(
-        ThreadPoolPolicy("shared", workers=2)
+    inner: Chain[Work, Work] = Chain("inner").use(Identity).on(ThreadPolicy("shared"))
+    workflow: Chain[Work, Work] = (
+        Chain[Work, Work]("outer").use(inner).on(ThreadPoolPolicy("shared", workers=2))
     )
 
     with pytest.raises(ValidationError, match="conflicting declarations"):
@@ -389,8 +377,8 @@ def test_compile_rejects_policy_kind_conflict() -> None:
 
 def test_compile_rejects_async_policy_isolation_conflict() -> None:
     inner: Chain[Work, Work] = Chain("inner").use(Identity).on(AsyncPolicy("io"))
-    workflow: Chain[Work, Work] = Chain[Work, Work]("outer").use(inner).on(
-        AsyncPolicy("io", isolated=True)
+    workflow: Chain[Work, Work] = (
+        Chain[Work, Work]("outer").use(inner).on(AsyncPolicy("io", isolated=True))
     )
 
     with pytest.raises(ValidationError, match="conflicting declarations"):
@@ -465,7 +453,9 @@ def test_named_non_isolated_async_policy_uses_caller_loop_without_portal() -> No
     assert runtime._async_portals == {}
 
 
-def test_isolated_async_policy_exception_propagates_and_portal_remains_reusable() -> None:
+def test_isolated_async_policy_exception_propagates_and_portal_remains_reusable() -> (
+    None
+):
     runtime = Runtime()
     failing: Chain[Work, Work] = (
         Chain("failing").use(FailingAsyncPortal).on(AsyncPolicy("io", isolated=True))
@@ -476,8 +466,12 @@ def test_isolated_async_policy_exception_propagates_and_portal_remains_reusable(
 
     async def run() -> Work:
         with pytest.raises(ValueError, match="portal failed"):
-            await asyncio.wait_for(runtime.run_async(failing, Work(1, [], [])), timeout=1)
-        return await asyncio.wait_for(runtime.run_async(working, Work(2, [], [])), timeout=1)
+            await asyncio.wait_for(
+                runtime.run_async(failing, Work(1, [], [])), timeout=1
+            )
+        return await asyncio.wait_for(
+            runtime.run_async(working, Work(2, [], [])), timeout=1
+        )
 
     try:
         result = asyncio.run(run())
@@ -515,11 +509,11 @@ def test_isolated_async_policy_handles_concurrent_submissions_on_one_portal() ->
 
 def test_nested_same_isolated_async_policy_does_not_deadlock() -> None:
     runtime = Runtime()
-    inner: Chain[Work, Work] = Chain("inner").use(RecordAsyncPortal).on(
-        AsyncPolicy("io", isolated=True)
+    inner: Chain[Work, Work] = (
+        Chain("inner").use(RecordAsyncPortal).on(AsyncPolicy("io", isolated=True))
     )
-    workflow: Chain[Work, Work] = Chain[Work, Work]("outer").use(inner).on(
-        AsyncPolicy("io", isolated=True)
+    workflow: Chain[Work, Work] = (
+        Chain[Work, Work]("outer").use(inner).on(AsyncPolicy("io", isolated=True))
     )
 
     async def run() -> Work:
@@ -579,8 +573,8 @@ def test_thread_pool_caps_concurrent_workflow_invocations() -> None:
     SlowPoolStep.max_active = 0
 
     runtime = Runtime()
-    workflow: Chain[Work, Work] = Chain("slow").use(SlowPoolStep).on(
-        ThreadPoolPolicy("pool", workers=2)
+    workflow: Chain[Work, Work] = (
+        Chain("slow").use(SlowPoolStep).on(ThreadPoolPolicy("pool", workers=2))
     )
 
     async def run_many() -> list[Work]:
@@ -601,11 +595,11 @@ def test_thread_pool_caps_concurrent_workflow_invocations() -> None:
 
 def test_nested_same_thread_pool_policy_does_not_deadlock() -> None:
     runtime = Runtime()
-    inner: Chain[Work, Work] = Chain("inner").use(Identity).on(
-        ThreadPoolPolicy("pool", workers=1)
+    inner: Chain[Work, Work] = (
+        Chain("inner").use(Identity).on(ThreadPoolPolicy("pool", workers=1))
     )
-    workflow: Chain[Work, Work] = Chain[Work, Work]("outer").use(inner).on(
-        ThreadPoolPolicy("pool", workers=1)
+    workflow: Chain[Work, Work] = (
+        Chain[Work, Work]("outer").use(inner).on(ThreadPoolPolicy("pool", workers=1))
     )
 
     try:

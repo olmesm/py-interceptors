@@ -278,9 +278,7 @@ class Runtime:
             return None
         return key
 
-    async def run_async[TIn, TOut](
-        self, chain: Chain[TIn, TOut], payload: TIn
-    ) -> TOut:
+    async def run_async[TIn, TOut](self, chain: Chain[TIn, TOut], payload: TIn) -> TOut:
         """Compile if needed, then execute ``chain`` asynchronously."""
         plan = self.compile(chain, initial=type(payload))
         return await plan.run_async(payload)
@@ -370,9 +368,7 @@ class Runtime:
         effective_policy = chain.policy or inherited_policy
 
         if isinstance(effective_policy, AsyncPolicy):
-            raise ExecutionError(
-                f"Chain '{chain.name}' requires async execution"
-            )
+            raise ExecutionError(f"Chain '{chain.name}' requires async execution")
 
         if isinstance(effective_policy, ThreadPolicy | ThreadPoolPolicy):
             if not self._is_current_policy(effective_policy):
@@ -1012,9 +1008,11 @@ class Runtime:
         *args: object,
     ) -> Any:
         if stage == "stream":
+
             def operation(*inner_args: object) -> Any:
                 return self._materialize_stream_result_sync(fn, *inner_args)
         else:
+
             def operation(*inner_args: object) -> Any:
                 return self._call_sync(fn, *inner_args)
 
@@ -1037,9 +1035,11 @@ class Runtime:
         *args: object,
     ) -> Any:
         if stage == "stream":
+
             async def operation(*inner_args: object) -> Any:
                 return await self._materialize_stream_result_async(fn, *inner_args)
         else:
+
             async def operation(*inner_args: object) -> Any:
                 return await self._call_async(fn, *inner_args)
 

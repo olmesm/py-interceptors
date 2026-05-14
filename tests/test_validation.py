@@ -88,9 +88,7 @@ class WrongMapOutput(Interceptor[NumberItem, NumberItem]):
     output_type = NumberItem
 
 
-class MissingStreamMetadata(
-    StreamInterceptor[Start, NumberItem, SquaredItem, Total]
-):
+class MissingStreamMetadata(StreamInterceptor[Start, NumberItem, SquaredItem, Total]):
     input_type = Start
     emit_type = NumberItem
     output_type = Total
@@ -102,9 +100,7 @@ class MissingStreamMetadata(
         return Total(total=sum(item.squared for item in items))
 
 
-class MissingStreamMethod(
-    StreamInterceptor[Start, NumberItem, SquaredItem, Total]
-):
+class MissingStreamMethod(StreamInterceptor[Start, NumberItem, SquaredItem, Total]):
     input_type = Start
     emit_type = NumberItem
     collect_type = SquaredItem
@@ -114,9 +110,7 @@ class MissingStreamMethod(
         return Total(total=sum(item.squared for item in items))
 
 
-class MissingCollectMethod(
-    StreamInterceptor[Start, NumberItem, SquaredItem, Total]
-):
+class MissingCollectMethod(StreamInterceptor[Start, NumberItem, SquaredItem, Total]):
     input_type = Start
     emit_type = NumberItem
     collect_type = SquaredItem
@@ -179,9 +173,9 @@ def test_compile_allows_explicit_object_metadata() -> None:
 
 def test_compile_rejects_stream_chain_missing_stream() -> None:
     per_item: Chain[NumberItem, SquaredItem] = Chain("square").use(Square)
-    stage: StreamChain[Start, NumberItem, SquaredItem, Total] = (
-        StreamChain[Start, NumberItem, SquaredItem, Total]("bad").map(per_item)
-    )
+    stage: StreamChain[Start, NumberItem, SquaredItem, Total] = StreamChain[
+        Start, NumberItem, SquaredItem, Total
+    ]("bad").map(per_item)
     workflow: Chain[Start, Total] = Chain[Start, Start]("bad").use(stage)
 
     with pytest.raises(ValidationError, match="missing stream"):
@@ -189,9 +183,9 @@ def test_compile_rejects_stream_chain_missing_stream() -> None:
 
 
 def test_compile_rejects_stream_chain_missing_map() -> None:
-    stage: StreamChain[Start, NumberItem, SquaredItem, Total] = (
-        StreamChain[Start, NumberItem, SquaredItem, Total]("bad").stream(SplitNumbers)
-    )
+    stage: StreamChain[Start, NumberItem, SquaredItem, Total] = StreamChain[
+        Start, NumberItem, SquaredItem, Total
+    ]("bad").stream(SplitNumbers)
     workflow: Chain[Start, Total] = Chain[Start, Start]("bad").use(stage)
 
     with pytest.raises(ValidationError, match="missing map"):

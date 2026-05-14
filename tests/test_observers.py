@@ -138,9 +138,7 @@ def test_observer_records_stream_child_path_and_thread_policy() -> None:
     events: list[ExecutionEvent] = []
     runtime = Runtime().add_observer(events.append)
     per_item: Chain[Number, Squared] = (
-        Chain[Number, Number]("square-chain")
-        .use(Square)
-        .on(ThreadPolicy("worker"))
+        Chain[Number, Number]("square-chain").use(Square).on(ThreadPolicy("worker"))
     )
     stream_stage: StreamChain[Numbers, Number, Squared, Total] = (
         StreamChain[Numbers, Number, Squared, Total]("numbers")
@@ -165,9 +163,7 @@ def test_observer_records_stream_child_path_and_thread_policy() -> None:
     }
 
     square_enters = [
-        event
-        for event in events
-        if event.step == "square" and event.stage == "enter"
+        event for event in events if event.step == "square" and event.stage == "enter"
     ]
     assert len(square_enters) == 2
     assert {event.path for event in square_enters} == {

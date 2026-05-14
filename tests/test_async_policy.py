@@ -137,9 +137,9 @@ def test_isolated_async_policy_runs_on_named_runtime_portal() -> None:
 
 
 def test_isolated_async_policy_materializes_streams_on_portal() -> None:
-    per_item: Chain[PortalNumber, PortalSquared] = (
-        Chain[PortalNumber, PortalNumber]("square").use(AsyncSquare)
-    )
+    per_item: Chain[PortalNumber, PortalSquared] = Chain[PortalNumber, PortalNumber](
+        "square"
+    ).use(AsyncSquare)
     stream_stage: StreamChain[
         PortalNumbers,
         PortalNumber,

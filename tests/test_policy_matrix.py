@@ -327,7 +327,9 @@ def test_policy_matrix_isolated_parent_same_isolated_child_runs_inline() -> None
     ]
 
 
-def test_policy_matrix_isolated_parent_default_async_child_uses_current_runtime() -> None:
+def test_policy_matrix_isolated_parent_default_async_child_uses_current_runtime() -> (
+    None
+):
     workflow = _workflow(
         AsyncRecord,
         parent_policy=AsyncPolicy("io", isolated=True),
