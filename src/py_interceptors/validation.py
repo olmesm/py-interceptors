@@ -123,9 +123,7 @@ def _validate_stream_chain(
             f"StreamChain '{stream_chain.name}' is missing stream(...)"
         )
     if stream_chain.processor is None:
-        raise ValidationError(
-            f"StreamChain '{stream_chain.name}' is missing map(...)"
-        )
+        raise ValidationError(f"StreamChain '{stream_chain.name}' is missing map(...)")
 
     opener = stream_chain.opener
     processor = stream_chain.processor
@@ -154,9 +152,7 @@ def _validate_interceptor_cls(step_cls: type[Interceptor[Any, Any]]) -> None:
     _validate_step_name(step_cls, "Interceptor")
     _reject_legacy_metadata(step_cls, ("Input", "Output"))
     missing = [
-        attr
-        for attr in ("input_type", "output_type")
-        if attr not in step_cls.__dict__
+        attr for attr in ("input_type", "output_type") if attr not in step_cls.__dict__
     ]
     if missing:
         raise ValidationError(

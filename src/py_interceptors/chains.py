@@ -270,7 +270,9 @@ class StreamChain[TIn, TEmit, TCollect, TOut]:
         if self.opener is not None:
             raise ValueError("StreamChain.stream(...) may only be called once")
         if not isinstance(opener, type) or not issubclass(opener, StreamInterceptor):
-            raise TypeError("StreamChain.stream(...) requires a StreamInterceptor class")
+            raise TypeError(
+                "StreamChain.stream(...) requires a StreamInterceptor class"
+            )
         return replace(self, opener=opener)
 
     @overload
@@ -384,7 +386,9 @@ class _EmptyStreamChainBuilder:
         opener: StreamInterceptorCls[TIn, TEmit, TCollect, TOut],
     ) -> _StreamMapBuilder[TIn, TEmit, TCollect, TOut]:
         if not isinstance(opener, type) or not issubclass(opener, StreamInterceptor):
-            raise TypeError("StreamChain.stream(...) requires a StreamInterceptor class")
+            raise TypeError(
+                "StreamChain.stream(...) requires a StreamInterceptor class"
+            )
         return _StreamMapBuilder(
             name=self.name,
             opener=opener,

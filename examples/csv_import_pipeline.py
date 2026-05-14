@@ -118,7 +118,9 @@ class ValidateRow(Interceptor[RawRow, RowResult]):
 
         if amount <= 0:
             return RowResult(
-                rejected=RejectedRow(ctx.line_number, "amount must be positive", ctx.data)
+                rejected=RejectedRow(
+                    ctx.line_number, "amount must be positive", ctx.data
+                )
             )
 
         return RowResult(accepted=AcceptedRow(email=email, amount=amount))
@@ -126,12 +128,7 @@ class ValidateRow(Interceptor[RawRow, RowResult]):
 
 validate_rows = chain("validate row").use(ValidateRow).build()
 
-import_stage = (
-    stream_chain("import rows")
-    .stream(SplitRows)
-    .map(validate_rows)
-    .build()
-)
+import_stage = stream_chain("import rows").stream(SplitRows).map(validate_rows).build()
 
 workflow = chain("csv import").use(ParseCsv).use(import_stage).build()
 

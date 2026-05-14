@@ -82,7 +82,9 @@ class FailingCleanupChild(Interceptor[CleanupContext, CleanupContext]):
         raise RuntimeError("child failed")
 
 
-class SplitCleanup(StreamInterceptor[CleanupContext, CleanupItem, CleanupItem, CleanupContext]):
+class SplitCleanup(
+    StreamInterceptor[CleanupContext, CleanupItem, CleanupItem, CleanupContext]
+):
     input_type = CleanupContext
     emit_type = CleanupItem
     collect_type = CleanupItem
@@ -177,7 +179,9 @@ class ParallelSplit(
         return ctx
 
     def error(self, ctx: ParallelContext, err: Exception) -> ParallelContext:
-        ctx.events.append(f"error:{type(err).__name__}:{threading.current_thread().name}")
+        ctx.events.append(
+            f"error:{type(err).__name__}:{threading.current_thread().name}"
+        )
         return ctx
 
 
@@ -293,9 +297,9 @@ def _chain_workflow(
     failing: bool,
 ) -> Chain[CleanupContext, CleanupContext]:
     child_step = FailingCleanupChild if failing else CleanupChild
-    child: Chain[CleanupContext, CleanupContext] = Chain[CleanupContext, CleanupContext](
-        f"{case}-child"
-    ).use(child_step)
+    child: Chain[CleanupContext, CleanupContext] = Chain[
+        CleanupContext, CleanupContext
+    ](f"{case}-child").use(child_step)
     child = _apply_policy(child, _policy(child_policy_kind, f"{case}-child"))
 
     workflow: Chain[CleanupContext, CleanupContext] = (
@@ -392,7 +396,9 @@ async def _run_parallel_and_shutdown(
 ) -> tuple[Runtime, ResourceSnapshot, ParallelContext]:
     runtime = Runtime()
     try:
-        result = await runtime.run_async(workflow, ParallelContext(events=[], values=[]))
+        result = await runtime.run_async(
+            workflow, ParallelContext(events=[], values=[])
+        )
         snapshot = _snapshot_resources(runtime)
     finally:
         await runtime.shutdown_async()
@@ -419,11 +425,7 @@ def _executor_threads(executor: ThreadPoolExecutor) -> list[threading.Thread]:
     raw_threads: object = getattr(executor, "_threads", set())
     if not isinstance(raw_threads, set):
         return []
-    return [
-        thread
-        for thread in raw_threads
-        if isinstance(thread, threading.Thread)
-    ]
+    return [thread for thread in raw_threads if isinstance(thread, threading.Thread)]
 
 
 def _assert_runtime_resources_released(
@@ -445,9 +447,7 @@ def _assert_runtime_resources_released(
         assert not thread.is_alive()
 
     leaked_threads = [
-        thread.name
-        for thread in threading.enumerate()
-        if thread.name.startswith(case)
+        thread.name for thread in threading.enumerate() if thread.name.startswith(case)
     ]
     assert leaked_threads == []
 
@@ -541,8 +541,7 @@ def test_stream_explicit_policy_parallel_child_failure_releases_resources() -> N
     assert FailingParallelItemChild.max_active == 2
     assert result.values == []
     assert any(
-        event == f"error:RuntimeError:{case}-opener_0"
-        for event in result.events
+        event == f"error:RuntimeError:{case}-opener_0" for event in result.events
     )
     assert not any(event.startswith("collect:") for event in result.events)
     _assert_runtime_resources_released(runtime, snapshot, case)
@@ -563,8 +562,7 @@ def test_stream_explicit_policy_collect_failure_releases_resources() -> None:
     assert result.values == []
     assert f"collect-fail:{case}-opener_0" in result.events
     assert any(
-        event == f"error:RuntimeError:{case}-opener_0"
-        for event in result.events
+        event == f"error:RuntimeError:{case}-opener_0" for event in result.events
     )
     _assert_runtime_resources_released(runtime, snapshot, case)
 
@@ -584,8 +582,7 @@ def test_stream_explicit_policy_stream_failure_releases_resources() -> None:
     assert result.values == []
     assert f"stream-fail:{case}-opener_0" in result.events
     assert any(
-        event == f"error:RuntimeError:{case}-opener_0"
-        for event in result.events
+        event == f"error:RuntimeError:{case}-opener_0" for event in result.events
     )
     assert not any(event.startswith("item:") for event in result.events)
     _assert_runtime_resources_released(runtime, snapshot, case)

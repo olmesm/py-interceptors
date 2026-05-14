@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Only one release run at a time.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Semantic release
+    runs-on: ubuntu-latest
+    # Skip the release commit itself to avoid loops.
+    if: github.repository == 'olmesm/py-interceptors' && !contains(github.event.head_commit.message, 'chore(release):')
+    permissions:
+      contents: write       # create tags + GitHub releases
+      id-token: write       # PyPI trusted publishing (OIDC)
+
+    steps:
+      - name: Checkout (full history for semantic-release)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync dependencies
+        run: uv sync --frozen --all-extras --dev
+
+      - name: Python Semantic Release — version
+        id: semrel
+        uses: python-semantic-release/python-semantic-release@v9
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # We publish to PyPI in a separate step via OIDC.
+          build: false
+          push: true
+          changelog: true
+          commit: true
+          tag: true
+          vcs_release: false
+
+      - name: Build distribution
+        if: steps.semrel.outputs.released == 'true'
+        run: |
+          rm -rf dist
+          uv build
+
+      - name: Publish to PyPI (OIDC trusted publishing)
+        if: steps.semrel.outputs.released == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+          # No username/password — OIDC handles auth via id-token: write above.
+
+      - name: Create GitHub Release
+        if: steps.semrel.outputs.released == 'true'
+        uses: python-semantic-release/publish-action@v9
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.semrel.outputs.tag }}

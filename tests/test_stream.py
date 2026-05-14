@@ -221,9 +221,7 @@ class PoolMapFails(StreamInterceptor[Numbers, NumberItem, SquaredItem, Total]):
         return Total(total=-5)
 
 
-class AsyncCollectNumbers(
-    StreamInterceptor[Numbers, NumberItem, SquaredItem, Total]
-):
+class AsyncCollectNumbers(StreamInterceptor[Numbers, NumberItem, SquaredItem, Total]):
     input_type = Numbers
     emit_type = NumberItem
     collect_type = SquaredItem
@@ -238,9 +236,7 @@ class AsyncCollectNumbers(
         return Total(total=sum(item.squared for item in items))
 
 
-class OrderedSplit(
-    StreamInterceptor[Numbers, NumberItem, SquaredItem, OrderedValues]
-):
+class OrderedSplit(StreamInterceptor[Numbers, NumberItem, SquaredItem, OrderedValues]):
     input_type = Numbers
     emit_type = NumberItem
     collect_type = SquaredItem
@@ -258,9 +254,7 @@ class OrderedSplit(
         return OrderedValues(values=[item.value for item in items])
 
 
-class TraceSplit(
-    StreamInterceptor[TraceNumbers, TraceItem, TraceItem, TraceResult]
-):
+class TraceSplit(StreamInterceptor[TraceNumbers, TraceItem, TraceItem, TraceResult]):
     input_type = TraceNumbers
     emit_type = TraceItem
     collect_type = TraceItem
@@ -411,10 +405,8 @@ def test_stream_error_handles_mapped_child_failure() -> None:
 
 
 def test_stream_error_handles_thread_pool_mapped_child_failure() -> None:
-    per_item: Chain[NumberItem, SquaredItem] = Chain("fail").use(
-        FailingSquare
-    ).on(
-        ThreadPoolPolicy("pool", workers=2)
+    per_item: Chain[NumberItem, SquaredItem] = (
+        Chain("fail").use(FailingSquare).on(ThreadPoolPolicy("pool", workers=2))
     )
     stream_stage: StreamChain[Numbers, NumberItem, SquaredItem, Total] = (
         StreamChain[Numbers, NumberItem, SquaredItem, Total]("pool-map-fails")
@@ -489,9 +481,9 @@ def test_stream_child_chain_leave_runs_before_collect() -> None:
         .stream(TraceSplit)
         .map(per_item)
     )
-    workflow: Chain[TraceNumbers, TraceResult] = (
-        Chain[TraceNumbers, TraceNumbers]("workflow").use(stream_stage)
-    )
+    workflow: Chain[TraceNumbers, TraceResult] = Chain[TraceNumbers, TraceNumbers](
+        "workflow"
+    ).use(stream_stage)
 
     result = Runtime().run_sync(workflow, TraceNumbers(items=[1, 2], events=[]))
 
@@ -517,9 +509,9 @@ def test_stream_child_chain_error_handling_runs_inside_map() -> None:
         .stream(TraceSplit)
         .map(per_item)
     )
-    workflow: Chain[TraceNumbers, TraceResult] = (
-        Chain[TraceNumbers, TraceNumbers]("workflow").use(stream_stage)
-    )
+    workflow: Chain[TraceNumbers, TraceResult] = Chain[TraceNumbers, TraceNumbers](
+        "workflow"
+    ).use(stream_stage)
 
     result = Runtime().run_sync(workflow, TraceNumbers(items=[1], events=[]))
 
@@ -538,10 +530,8 @@ def test_stream_map_uses_thread_pool_parallelism() -> None:
     SlowSquare.active = 0
     SlowSquare.max_active = 0
 
-    per_item: Chain[NumberItem, SquaredItem] = Chain("slow-square").use(
-        SlowSquare
-    ).on(
-        ThreadPoolPolicy("pool", workers=2)
+    per_item: Chain[NumberItem, SquaredItem] = (
+        Chain("slow-square").use(SlowSquare).on(ThreadPoolPolicy("pool", workers=2))
     )
     stream_stage: StreamChain[Numbers, NumberItem, SquaredItem, Total] = (
         StreamChain[Numbers, NumberItem, SquaredItem, Total]("split-square")
@@ -563,19 +553,21 @@ def test_stream_map_uses_thread_pool_parallelism() -> None:
     runtime.shutdown()
 
 
-def test_thread_pool_stream_map_preserves_input_order_when_items_finish_out_of_order() -> None:
-    per_item: Chain[NumberItem, SquaredItem] = Chain("slow-square").use(
-        SlowOutOfOrderSquare
-    ).on(
-        ThreadPoolPolicy("pool", workers=4)
+def test_thread_pool_stream_map_preserves_input_order_when_items_finish_out_of_order() -> (
+    None
+):
+    per_item: Chain[NumberItem, SquaredItem] = (
+        Chain("slow-square")
+        .use(SlowOutOfOrderSquare)
+        .on(ThreadPoolPolicy("pool", workers=4))
     )
     stream_stage: StreamChain[Numbers, NumberItem, SquaredItem, OrderedValues] = (
         StreamChain[Numbers, NumberItem, SquaredItem, OrderedValues]("ordered")
         .stream(OrderedSplit)
         .map(per_item)
     )
-    workflow: Chain[Numbers, OrderedValues] = (
-        Chain[Numbers, Numbers]("workflow").use(stream_stage)
+    workflow: Chain[Numbers, OrderedValues] = Chain[Numbers, Numbers]("workflow").use(
+        stream_stage
     )
     runtime = Runtime()
 
