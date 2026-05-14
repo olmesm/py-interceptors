@@ -46,7 +46,7 @@ def test_sync_route_drives_async_chain_via_run_blocking() -> None:
         body_again = _post_enrich(client)
         assert runtime._async_portals["py-interceptors-default"] is default_portal
 
-        # Payload comes from dispatch_libraries x symbols.
+        # Payload comes from dispatch_libraries and symbols.
         payload = body["payload"]
         assert isinstance(payload, str)
         for library in ("alpha", "beta"):
