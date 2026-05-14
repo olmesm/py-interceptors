@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from py_interceptors.chains import Chain
@@ -18,7 +20,8 @@ class CompiledPlan[TIn, TOut]:
     Validated executable workflow plan.
 
     Plans are produced by ``Runtime.compile(...)`` and keep the validated root
-    chain, input/output type specs, and whether async execution is required.
+    chain, input/output type specs, whether async execution is required, and
+    the resolved dependency map for every interceptor in the chain tree.
     """
 
     runtime: Runtime
@@ -26,6 +29,9 @@ class CompiledPlan[TIn, TOut]:
     input_spec: TypeSpec
     output_spec: TypeSpec
     is_async: bool
+    resolution: Mapping[int, Mapping[str, object]] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
 
     def run_sync(self, payload: TIn) -> TOut:
         """Run this plan synchronously when it contains no async work."""
@@ -34,12 +40,14 @@ class CompiledPlan[TIn, TOut]:
                 "This plan contains async segments or async steps; use run_async(...)"
             )
         self._validate_payload(payload)
-        return self.runtime._run_chain_sync(self.root, payload, None)
+        with self.runtime._active_resolution(self.resolution):
+            return self.runtime._run_chain_sync(self.root, payload, None)
 
     async def run_async(self, payload: TIn) -> TOut:
         """Run this plan asynchronously."""
         self._validate_payload(payload)
-        return await self.runtime._run_chain_async(self.root, payload, None)
+        with self.runtime._active_resolution(self.resolution):
+            return await self.runtime._run_chain_async(self.root, payload, None)
 
     def _validate_payload(self, payload: object) -> None:
         if not _is_assignable(type(payload), self.input_spec):

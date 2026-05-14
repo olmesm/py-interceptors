@@ -5,13 +5,22 @@ import contextvars
 import inspect
 import threading
 import time
-from collections.abc import AsyncIterable, Awaitable, Callable, Coroutine, Iterable
+from collections.abc import (
+    AsyncIterable,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    Iterator,
+    Mapping,
+)
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Self, cast
 
-from py_interceptors.chains import Chain, StreamChain
+from py_interceptors.chains import BoundInterceptor, Chain, StreamChain
 from py_interceptors.errors import CompilationError, ExecutionError, ValidationError
 from py_interceptors.interceptors import Interceptor
 from py_interceptors.plan import CompiledPlan
@@ -27,6 +36,7 @@ from py_interceptors.validation import (
     _chain_is_async,
     _stream_chain_body_is_async,
     _validate_chain,
+    build_resolution_map,
 )
 
 type PolicyKey = tuple[type[object], str]
@@ -176,6 +186,16 @@ class Runtime:
         init=False,
         repr=False,
     )
+    _resolution_var: contextvars.ContextVar[
+        dict[int, Mapping[str, object]] | None
+    ] = field(
+        default_factory=lambda: contextvars.ContextVar(
+            "py_interceptors_resolution",
+            default=None,
+        ),
+        init=False,
+        repr=False,
+    )
 
     def validate(
         self, chain: Chain[Any, Any], initial: TypeSpec | None = None
@@ -251,6 +271,7 @@ class Runtime:
     ) -> CompiledPlan[TIn, TOut]:
         try:
             final_output = _validate_chain(chain, initial)
+            resolution = build_resolution_map(chain)
         except ValidationError:
             raise
         except Exception as err:
@@ -264,6 +285,7 @@ class Runtime:
             input_spec=root_input,
             output_spec=final_output,
             is_async=async_required,
+            resolution=resolution,
         )
 
     @staticmethod
@@ -401,8 +423,10 @@ class Runtime:
             if pending_error is not None:
                 break
 
-            if isinstance(item, type) and issubclass(item, Interceptor):
-                interceptor = self._instantiate(item)
+            if (isinstance(item, type) and issubclass(item, Interceptor)) or (
+                isinstance(item, BoundInterceptor)
+            ):
+                interceptor = self._instantiate_step(item)
                 try:
                     current = self._run_interceptor_stage_sync(
                         chain.name,
@@ -669,8 +693,10 @@ class Runtime:
             if pending_error is not None:
                 break
 
-            if isinstance(item, type) and issubclass(item, Interceptor):
-                interceptor = self._instantiate(item)
+            if (isinstance(item, type) and issubclass(item, Interceptor)) or (
+                isinstance(item, BoundInterceptor)
+            ):
+                interceptor = self._instantiate_step(item)
                 try:
                     current = await self._run_interceptor_stage_async(
                         chain.name,
@@ -1457,3 +1483,48 @@ class Runtime:
             return cls()
         except Exception as err:
             raise ExecutionError(f"Could not instantiate {cls.__name__}") from err
+
+    def _instantiate_step(
+        self,
+        item: type[Interceptor[Any, Any]] | BoundInterceptor,
+    ) -> Interceptor[Any, Any]:
+        """
+        Instantiate an interceptor step and inject its resolved dependencies.
+
+        The active ``CompiledPlan`` pushes a ``{id(step): {attr: value}}`` map
+        onto the runtime resolution context before execution. Bare
+        ``Interceptor`` classes whose declared annotations were resolved from
+        an ancestor ``.provide(...)`` are injected here too.
+        """
+
+        if isinstance(item, BoundInterceptor):
+            interceptor_cls = item.interceptor_type
+        else:
+            interceptor_cls = item
+
+        instance = self._instantiate(interceptor_cls)
+
+        resolution = self._resolution_var.get()
+        if resolution is None:
+            return instance
+        bindings = resolution.get(id(item))
+        if not bindings:
+            return instance
+        for attr, value in bindings.items():
+            setattr(instance, attr, value)
+        return instance
+
+    @contextmanager
+    def _active_resolution(
+        self,
+        resolution: Mapping[int, Mapping[str, object]] | None,
+    ) -> Iterator[None]:
+        """Bind ``resolution`` for the duration of a plan execution."""
+
+        token = self._resolution_var.set(
+            cast(dict[int, Mapping[str, object]] | None, resolution)
+        )
+        try:
+            yield
+        finally:
+            self._resolution_var.reset(token)

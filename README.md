@@ -107,6 +107,9 @@ a chain needs a named thread lane, a worker pool, or async execution.
   exception notes.
 - [Organizing workflows](docs/organizing-workflows.md): suggested application
   structure for larger projects.
+- [Dependencies](docs/dependencies.md): declaring interceptor dependencies,
+  binding them with `.use(Cls, **kwargs)`, and supplying them from a chain
+  via `.provide(...)`.
 
 ## Examples
 
