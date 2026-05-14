@@ -359,9 +359,7 @@ class Chain[TIn, TOut]:
         *,
         _items: tuple[object, ...] | None = None,
         policy: Policy | None = None,
-        provides: (
-            Mapping[str, object] | tuple[tuple[str, object], ...] | None
-        ) = None,
+        provides: (Mapping[str, object] | tuple[tuple[str, object], ...] | None) = None,
     ) -> None:
         source_items = _items if _items is not None else ()
         normalized = tuple(_normalize_chain_item(item) for item in source_items)

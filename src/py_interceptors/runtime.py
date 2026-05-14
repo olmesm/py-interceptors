@@ -186,15 +186,15 @@ class Runtime:
         init=False,
         repr=False,
     )
-    _resolution_var: contextvars.ContextVar[
-        dict[int, Mapping[str, object]] | None
-    ] = field(
-        default_factory=lambda: contextvars.ContextVar(
-            "py_interceptors_resolution",
-            default=None,
-        ),
-        init=False,
-        repr=False,
+    _resolution_var: contextvars.ContextVar[dict[int, Mapping[str, object]] | None] = (
+        field(
+            default_factory=lambda: contextvars.ContextVar(
+                "py_interceptors_resolution",
+                default=None,
+            ),
+            init=False,
+            repr=False,
+        )
     )
 
     def validate(

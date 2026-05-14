@@ -44,11 +44,9 @@ def test_sync_route_drives_async_chain_via_run_blocking() -> None:
 
         # A second request reuses the same portal — no per-request loop.
         body_again = _post_enrich(client)
-        assert (
-            runtime._async_portals["py-interceptors-default"] is default_portal
-        )
+        assert runtime._async_portals["py-interceptors-default"] is default_portal
 
-        # Payload comes from dispatch_libraries × symbols.
+        # Payload comes from dispatch_libraries x symbols.
         payload = body["payload"]
         assert isinstance(payload, str)
         for library in ("alpha", "beta"):
@@ -124,9 +122,7 @@ def test_run_blocking_rejects_running_loop() -> None:
         import asyncio
 
         async def call_from_inside_loop() -> None:
-            payload = example.EnrichmentRequest(
-                raw_body=b"AAPL", libraries=["alpha"]
-            )
+            payload = example.EnrichmentRequest(raw_body=b"AAPL", libraries=["alpha"])
             runtime.run_blocking(workflow, payload)
 
         with pytest.raises(ExecutionError, match="running event loop"):
@@ -144,9 +140,7 @@ def test_run_blocking_caller_thread_blocks_until_done() -> None:
     runtime = Runtime()
     try:
         caller_thread = threading.current_thread().name
-        payload = example.EnrichmentRequest(
-            raw_body=b"AAPL,MSFT", libraries=["alpha"]
-        )
+        payload = example.EnrichmentRequest(raw_body=b"AAPL,MSFT", libraries=["alpha"])
 
         result = runtime.run_blocking(workflow, payload)
 
