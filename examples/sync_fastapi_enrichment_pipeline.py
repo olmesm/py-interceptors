@@ -55,7 +55,6 @@ from py_interceptors import (
     stream_chain,
 )
 
-
 # ---------------------------------------------------------------------------
 # Domain types
 # ---------------------------------------------------------------------------
@@ -198,9 +197,7 @@ class ConvertFullData(Interceptor[NormalizedRequest, NormalizedRequest]):
             key = str(full.get("symbol", "")).upper()
             existing = index.get(key)
             if existing is not None:
-                existing.update(
-                    {k: v for k, v in full.items() if k != "symbol"}
-                )
+                existing.update({k: v for k, v in full.items() if k != "symbol"})
         return ctx
 
 
@@ -234,9 +231,7 @@ class Serialize(Interceptor[NormalizedRequest, EnrichmentResponse]):
         parts: list[str] = []
         for library, rows in sorted(ctx.library_results.items()):
             for row in rows:
-                parts.append(
-                    f"{library}:{row.get('symbol')}={row.get('value')}"
-                )
+                parts.append(f"{library}:{row.get('symbol')}={row.get('value')}")
         return EnrichmentResponse(
             payload="|".join(parts).encode("utf-8"),
             trace=list(ctx.trace),
@@ -269,8 +264,7 @@ class FetchMatchFields(Interceptor[NormalizedRequest, NormalizedRequest]):
         _trace(ctx, "fetch-match")
         await asyncio.sleep(0)
         ctx.match_rows = [
-            {"symbol": symbol, "name": f"Name {symbol}"}
-            for symbol in ctx.symbols
+            {"symbol": symbol, "name": f"Name {symbol}"} for symbol in ctx.symbols
         ]
         return ctx
 
@@ -351,9 +345,7 @@ class FetchLibraryRows(Interceptor[LibraryRequest, LibraryResult]):
 # ---------------------------------------------------------------------------
 
 
-fetch_library_chain = (
-    chain("fetch library").use(FetchLibraryRows).on(io_portal).build()
-)
+fetch_library_chain = chain("fetch library").use(FetchLibraryRows).on(io_portal).build()
 
 dispatch_libraries = (
     stream_chain("dispatch libraries")
@@ -400,9 +392,7 @@ deserialize_block = (
 # Serialize is CPU-heavy and needs the same lane as the other frame steps.
 # Wrapping it in its own sub-chain pinned to ``frame_lane`` ensures it lands
 # on the frame-affinity thread regardless of what ran immediately before it.
-serialize_block = (
-    chain("serialize block").use(Serialize).on(frame_lane).build()
-)
+serialize_block = chain("serialize block").use(Serialize).on(frame_lane).build()
 
 workflow = (
     chain("sync enrichment")
@@ -425,9 +415,7 @@ workflow = (
 def get_runtime(app: FastAPI) -> Runtime:
     value: object = getattr(app.state, "enrichment_runtime", None)
     if not isinstance(value, Runtime):
-        raise RuntimeError(
-            "Enrichment runtime is only available during app lifespan"
-        )
+        raise RuntimeError("Enrichment runtime is only available during app lifespan")
     return value
 
 
@@ -455,9 +443,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         # threadpool. The handler must not touch ``await``.
         raw_body = _read_body_sync(request)
         libraries = [
-            value
-            for value in request.query_params.getlist("library")
-            if value
+            value for value in request.query_params.getlist("library") if value
         ]
         payload = EnrichmentRequest(raw_body=raw_body, libraries=libraries)
 

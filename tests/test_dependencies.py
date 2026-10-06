@@ -151,11 +151,7 @@ def test_direct_binding_type_mismatch_raises_at_use() -> None:
 def test_provide_supplies_dependency_to_bare_class_step() -> None:
     logger = Logger(name="prod")
     workflow = (
-        chain("root")
-        .provide(logger=logger)
-        .use(LoggingInterceptor)
-        .use(Render)
-        .build()
+        chain("root").provide(logger=logger).use(LoggingInterceptor).use(Render).build()
     )
     with Runtime() as runtime:
         runtime.run_sync(workflow, Request(user_id=7))
@@ -285,13 +281,7 @@ def test_optional_dep_uses_class_default_when_not_provided() -> None:
 
 def test_optional_dep_is_overridden_by_provide() -> None:
     override = Logger(name="override")
-    workflow = (
-        chain("x")
-        .provide(logger=override)
-        .use(OptionalDep)
-        .use(Render)
-        .build()
-    )
+    workflow = chain("x").provide(logger=override).use(OptionalDep).use(Render).build()
     with Runtime() as runtime:
         runtime.run_sync(workflow, Request(user_id=6))
     assert override.events == ["override:optional user=6"]
@@ -327,10 +317,7 @@ def production_subchain() -> Chain[Request, Response]:
 def test_subchain_can_be_tested_in_isolation_with_provide() -> None:
     fake_logger = Logger(name="test")
     test_workflow = (
-        chain("test")
-        .provide(logger=fake_logger)
-        .use(production_subchain())
-        .build()
+        chain("test").provide(logger=fake_logger).use(production_subchain()).build()
     )
     with Runtime() as runtime:
         result = runtime.run_sync(test_workflow, Request(user_id=99))
