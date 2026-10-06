@@ -2,6 +2,12 @@
 
 <!-- version list -->
 
+## v0.1.1 (2026-10-06)
+
+### Bug Fixes
+
+- resolve dependencies per execution scope and harden the runtime ([`492cbb3`](https://github.com/olmesm/py-interceptors/commit/492cbb3c9b51fff6ea8371624ccdd550fdf1d216))
+
 ## v0.1.0 (2026-05-14)
 
 ### Features
