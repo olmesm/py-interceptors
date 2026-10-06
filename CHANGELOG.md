@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v0.2.1 (2026-10-06)
+
+### Bug Fixes
+
+- reject a StreamChain passed directly to the runtime with a clear error ([`9e5625a`](https://github.com/olmesm/py-interceptors/commit/9e5625a526cb3391bcc1542a9bf3b93157ec07ae))
+
+### Documentation
+
+- match the docs to the code and document what was missing ([`c007d70`](https://github.com/olmesm/py-interceptors/commit/c007d70a4b63cf84e41029b99f6a69cd212861ce))
+- one FastAPI example, no polars, examples imported as a package ([`5cf0628`](https://github.com/olmesm/py-interceptors/commit/5cf06284ffb3d4d098f1fc099bb4dcf0d1a34e35))
+
 ## v0.2.0 (2026-10-06)
 
 ### Refactoring

@@ -1,6 +1,6 @@
 [project]
 name = "py-interceptors"
-version = "0.2.0"
+version = "0.2.1"
 description = "Composable typed interceptor workflows for Python"
 readme = "README.md"
 authors = [
