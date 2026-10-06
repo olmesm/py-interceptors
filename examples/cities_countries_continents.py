@@ -1,10 +1,15 @@
-from __future__ import annotations
+"""
+Stream composition inside a policy-shaped workflow.
+
+The root chain runs on one thread lane. The chunked fetch inside it is an
+async child chain, so each chunk hops back to the caller's event loop and the
+grouping step returns to the lane: ThreadPolicy -> AsyncPolicy -> ThreadPolicy.
+"""
 
 import asyncio
+from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass
-
-import polars as pl
+from itertools import batched
 
 from py_interceptors import (
     AsyncPolicy,
@@ -16,108 +21,58 @@ from py_interceptors import (
     stream_chain,
 )
 
+COUNTRY_OF = {
+    "London": "UK",
+    "Paris": "France",
+    "Berlin": "Germany",
+    "Madrid": "Spain",
+    "Tokyo": "Japan",
+    "Sydney": "Australia",
+}
 
-@dataclass
-class CitiesContext:
-    cities: list[str]
-
-
-@dataclass
-class DataFrameContext:
-    df: pl.DataFrame
-
-
-@dataclass
-class FinalContext:
-    df: pl.DataFrame
-
-
-class CitiesToDataFrame(Interceptor[CitiesContext, DataFrameContext]):
-    input_type = CitiesContext
-    output_type = DataFrameContext
-
-    def enter(self, ctx: CitiesContext) -> DataFrameContext:
-        return DataFrameContext(df=pl.DataFrame({"city": ctx.cities}))
+CONTINENT_OF = {
+    "UK": "Europe",
+    "France": "Europe",
+    "Germany": "Europe",
+    "Spain": "Europe",
+    "Japan": "Asia",
+    "Australia": "Oceania",
+}
 
 
-class ChunkCities(
-    StreamInterceptor[DataFrameContext, list[str], list[str], DataFrameContext]
-):
-    input_type = DataFrameContext
-    emit_type = list[str]
-    collect_type = list[str]
-    output_type = DataFrameContext
-
-    chunk_size = 3
-
-    def stream(self, ctx: DataFrameContext) -> Iterable[list[str]]:
-        cities = ctx.df["city"].to_list()
-        for i in range(0, len(cities), self.chunk_size):
-            yield cities[i : i + self.chunk_size]
-
-    def collect(
-        self,
-        ctx: DataFrameContext,
-        items: Iterable[list[str]],
-    ) -> DataFrameContext:
-        countries = [country for chunk in items for country in chunk]
-
-        return DataFrameContext(df=ctx.df.with_columns(pl.Series("country", countries)))
-
-
-class FetchCountries(Interceptor[list[str], list[str]]):
+class ChunkCities(StreamInterceptor[list[str], tuple[str, ...], list[str], list[str]]):
     input_type = list[str]
+    emit_type = tuple[str, ...]
+    collect_type = list[str]
     output_type = list[str]
 
-    async def enter(self, ctx: list[str]) -> list[str]:
-        lookup = {
-            "London": "UK",
-            "Paris": "France",
-            "Berlin": "Germany",
-            "Madrid": "Spain",
-            "Tokyo": "Japan",
-            "Sydney": "Australia",
-        }
+    def stream(self, ctx: list[str]) -> Iterable[tuple[str, ...]]:
+        return batched(ctx, 3)
 
+    def collect(self, ctx: list[str], items: Iterable[list[str]]) -> list[str]:
+        return [country for chunk in items for country in chunk]
+
+
+class FetchCountries(Interceptor[tuple[str, ...], list[str]]):
+    input_type = tuple[str, ...]
+    output_type = list[str]
+
+    async def enter(self, ctx: tuple[str, ...]) -> list[str]:
         await asyncio.sleep(0.01)
-
-        return [lookup.get(city, "Unknown") for city in ctx]
-
-
-class GroupByContinent(Interceptor[DataFrameContext, FinalContext]):
-    input_type = DataFrameContext
-    output_type = FinalContext
-
-    def enter(self, ctx: DataFrameContext) -> FinalContext:
-        country_to_continent = {
-            "UK": "Europe",
-            "France": "Europe",
-            "Germany": "Europe",
-            "Spain": "Europe",
-            "Japan": "Asia",
-            "Australia": "Oceania",
-        }
-
-        df = ctx.df.with_columns(
-            pl.col("country")
-            .map_elements(
-                lambda country: country_to_continent.get(country, "Other"),
-                return_dtype=pl.String,
-            )
-            .alias("continent")
-        )
-
-        grouped = (
-            df.group_by("continent").agg(pl.len().alias("city_count")).sort("continent")
-        )
-
-        return FinalContext(df=grouped)
+        return [COUNTRY_OF.get(city, "Unknown") for city in ctx]
 
 
-thread_main = ThreadPolicy("main")
-async_io = AsyncPolicy()
+class GroupByContinent(Interceptor[list[str], Counter[str]]):
+    input_type = list[str]
+    output_type = Counter
 
-enrich_countries = chain("fetch countries").use(FetchCountries).on(async_io).build()
+    def enter(self, ctx: list[str]) -> Counter[str]:
+        return Counter(CONTINENT_OF.get(country, "Other") for country in ctx)
+
+
+enrich_countries = (
+    chain("fetch countries").use(FetchCountries).on(AsyncPolicy()).build()
+)
 
 chunk_cities = (
     stream_chain("chunk cities").stream(ChunkCities).map(enrich_countries).build()
@@ -125,39 +80,19 @@ chunk_cities = (
 
 workflow = (
     chain("cities -> continents")
-    .use(CitiesToDataFrame)
     .use(chunk_cities)
     .use(GroupByContinent)
-    .on(thread_main)
+    .on(ThreadPolicy("main"))
     .build()
 )
 
-
-def example_context() -> CitiesContext:
-    return CitiesContext(
-        cities=[
-            "London",
-            "Paris",
-            "Berlin",
-            "Madrid",
-            "Tokyo",
-            "Sydney",
-        ]
-    )
+EXAMPLE_CITIES = ["London", "Paris", "Berlin", "Madrid", "Tokyo", "Sydney"]
 
 
-async def run_example() -> FinalContext:
-    runtime = Runtime()
-    try:
-        return await runtime.run_async(workflow, example_context())
-    finally:
-        runtime.shutdown()
-
-
-def main() -> None:
-    result = asyncio.run(run_example())
-    print(result.df)
+async def run_example() -> Counter[str]:
+    async with Runtime() as runtime:
+        return await runtime.run_async(workflow, EXAMPLE_CITIES)
 
 
 if __name__ == "__main__":
-    main()
+    print(asyncio.run(run_example()))

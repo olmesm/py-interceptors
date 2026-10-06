@@ -1,33 +1,15 @@
-from __future__ import annotations
-
 import csv
 from collections.abc import Iterable
 from dataclasses import dataclass
 from io import StringIO
 
-from py_interceptors import (
-    Interceptor,
-    Runtime,
-    StreamInterceptor,
-    chain,
-    stream_chain,
-)
-
-
-@dataclass
-class CsvText:
-    text: str
+from py_interceptors import Interceptor, Runtime, StreamInterceptor, chain, stream_chain
 
 
 @dataclass
 class RawRow:
     line_number: int
     data: dict[str, str]
-
-
-@dataclass
-class RawRows:
-    rows: list[RawRow]
 
 
 @dataclass
@@ -44,86 +26,59 @@ class RejectedRow:
 
 
 @dataclass
-class RowResult:
-    accepted: AcceptedRow | None = None
-    rejected: RejectedRow | None = None
-
-
-@dataclass
 class ImportSummary:
     accepted: list[AcceptedRow]
     rejected: list[RejectedRow]
     total_amount: int
 
 
-class ParseCsv(Interceptor[CsvText, RawRows]):
-    input_type = CsvText
-    output_type = RawRows
+class ParseCsv(Interceptor[str, list[RawRow]]):
+    input_type = str
+    output_type = list[RawRow]
 
-    def enter(self, ctx: CsvText) -> RawRows:
-        reader = csv.DictReader(StringIO(ctx.text))
-        rows = [
-            RawRow(
-                line_number=index,
-                data={key: value or "" for key, value in row.items()},
-            )
+    def enter(self, ctx: str) -> list[RawRow]:
+        reader = csv.DictReader(StringIO(ctx))
+        return [
+            RawRow(index, {key: value or "" for key, value in row.items()})
             for index, row in enumerate(reader, start=2)
         ]
-        return RawRows(rows=rows)
 
 
-class SplitRows(StreamInterceptor[RawRows, RawRow, RowResult, ImportSummary]):
-    input_type = RawRows
+class SplitRows(
+    StreamInterceptor[list[RawRow], RawRow, AcceptedRow | RejectedRow, ImportSummary]
+):
+    input_type = list[RawRow]
     emit_type = RawRow
-    collect_type = RowResult
+    collect_type = AcceptedRow | RejectedRow
     output_type = ImportSummary
 
-    def stream(self, ctx: RawRows) -> Iterable[RawRow]:
-        return iter(ctx.rows)
+    def stream(self, ctx: list[RawRow]) -> Iterable[RawRow]:
+        return ctx
 
     def collect(
-        self,
-        ctx: RawRows,
-        items: Iterable[RowResult],
+        self, ctx: list[RawRow], items: Iterable[AcceptedRow | RejectedRow]
     ) -> ImportSummary:
         results = list(items)
-        accepted = [item.accepted for item in results if item.accepted is not None]
-        rejected = [item.rejected for item in results if item.rejected is not None]
-        return ImportSummary(
-            accepted=accepted,
-            rejected=rejected,
-            total_amount=sum(row.amount for row in accepted),
-        )
+        accepted = [item for item in results if isinstance(item, AcceptedRow)]
+        rejected = [item for item in results if isinstance(item, RejectedRow)]
+        return ImportSummary(accepted, rejected, sum(row.amount for row in accepted))
 
 
-class ValidateRow(Interceptor[RawRow, RowResult]):
+class ValidateRow(Interceptor[RawRow, AcceptedRow | RejectedRow]):
     input_type = RawRow
-    output_type = RowResult
+    output_type = AcceptedRow | RejectedRow
 
-    def enter(self, ctx: RawRow) -> RowResult:
+    def enter(self, ctx: RawRow) -> AcceptedRow | RejectedRow:
         email = ctx.data.get("email", "").strip()
-        amount_text = ctx.data.get("amount", "").strip()
-
         if "@" not in email:
-            return RowResult(
-                rejected=RejectedRow(ctx.line_number, "invalid email", ctx.data)
-            )
-
+            return RejectedRow(ctx.line_number, "invalid email", ctx.data)
         try:
-            amount = int(amount_text)
+            amount = int(ctx.data.get("amount", ""))
         except ValueError:
-            return RowResult(
-                rejected=RejectedRow(ctx.line_number, "invalid amount", ctx.data)
-            )
-
+            return RejectedRow(ctx.line_number, "invalid amount", ctx.data)
         if amount <= 0:
-            return RowResult(
-                rejected=RejectedRow(
-                    ctx.line_number, "amount must be positive", ctx.data
-                )
-            )
-
-        return RowResult(accepted=AcceptedRow(email=email, amount=amount))
+            return RejectedRow(ctx.line_number, "amount must be positive", ctx.data)
+        return AcceptedRow(email, amount)
 
 
 validate_rows = chain("validate row").use(ValidateRow).build()
@@ -132,31 +87,19 @@ import_stage = stream_chain("import rows").stream(SplitRows).map(validate_rows).
 
 workflow = chain("csv import").use(ParseCsv).use(import_stage).build()
 
-
-def example_context() -> CsvText:
-    return CsvText(
-        text=(
-            "email,amount\n"
-            "ada@example.com,10\n"
-            "broken,20\n"
-            "grace@example.com,15\n"
-            "linus@example.com,-1\n"
-        )
-    )
+EXAMPLE_CSV = """\
+email,amount
+ada@example.com,10
+broken,20
+grace@example.com,15
+linus@example.com,-1
+"""
 
 
 def run_example() -> ImportSummary:
-    runtime = Runtime()
-    try:
-        return runtime.run_sync(workflow, example_context())
-    finally:
-        runtime.shutdown()
-
-
-def main() -> None:
-    result = run_example()
-    print(result)
+    with Runtime() as runtime:
+        return runtime.run_sync(workflow, EXAMPLE_CSV)
 
 
 if __name__ == "__main__":
-    main()
+    print(run_example())

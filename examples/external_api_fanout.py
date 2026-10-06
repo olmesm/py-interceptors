@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -15,16 +13,6 @@ from py_interceptors import (
 
 
 @dataclass
-class CustomerIds:
-    ids: list[int]
-
-
-@dataclass
-class CustomerId:
-    value: int
-
-
-@dataclass
 class CustomerProfile:
     customer_id: int
     name: str
@@ -37,47 +25,45 @@ class CustomerReport:
     premium_count: int
 
 
+FAKE_API = {
+    1: CustomerProfile(1, "Ada", "premium"),
+    2: CustomerProfile(2, "Linus", "standard"),
+    3: CustomerProfile(3, "Grace", "premium"),
+}
+
+
 class SplitCustomerIds(
-    StreamInterceptor[CustomerIds, CustomerId, CustomerProfile, CustomerReport]
+    StreamInterceptor[list[int], int, CustomerProfile, CustomerReport]
 ):
-    input_type = CustomerIds
-    emit_type = CustomerId
+    input_type = list[int]
+    emit_type = int
     collect_type = CustomerProfile
     output_type = CustomerReport
 
-    def stream(self, ctx: CustomerIds) -> Iterable[CustomerId]:
-        for customer_id in ctx.ids:
-            yield CustomerId(value=customer_id)
+    def stream(self, ctx: list[int]) -> Iterable[int]:
+        return ctx
 
     def collect(
-        self,
-        ctx: CustomerIds,
-        items: Iterable[CustomerProfile],
+        self, ctx: list[int], items: Iterable[CustomerProfile]
     ) -> CustomerReport:
+        # The async map preserves item order; sorting here shows that collect
+        # owns the final ordering regardless.
         profiles = sorted(items, key=lambda profile: profile.customer_id)
-        return CustomerReport(
-            profiles=profiles,
-            premium_count=sum(1 for profile in profiles if profile.tier == "premium"),
-        )
+        premium = sum(1 for profile in profiles if profile.tier == "premium")
+        return CustomerReport(profiles, premium)
 
 
-class FetchCustomerProfile(Interceptor[CustomerId, CustomerProfile]):
-    input_type = CustomerId
+class FetchCustomerProfile(Interceptor[int, CustomerProfile]):
+    input_type = int
     output_type = CustomerProfile
 
-    async def enter(self, ctx: CustomerId) -> CustomerProfile:
+    async def enter(self, ctx: int) -> CustomerProfile:
         await asyncio.sleep(0)
-        fake_api = {
-            1: CustomerProfile(1, "Ada", "premium"),
-            2: CustomerProfile(2, "Linus", "standard"),
-            3: CustomerProfile(3, "Grace", "premium"),
-        }
-        return fake_api.get(
-            ctx.value,
-            CustomerProfile(ctx.value, "Unknown", "standard"),
-        )
+        return FAKE_API.get(ctx, CustomerProfile(ctx, "Unknown", "standard"))
 
 
+# An isolated policy runs every fetch on one runtime-owned loop thread, so the
+# fan-out never blocks the caller's loop and a shared API client could live there.
 customer_api = AsyncPolicy("customer-api", isolated=True)
 
 fetch_customer = (
@@ -88,21 +74,14 @@ fanout_stage = (
     stream_chain("customer fanout").stream(SplitCustomerIds).map(fetch_customer).build()
 )
 
+# Runtime.run_* take a Chain, so the lone stream stage is wrapped in one.
 workflow = chain("customer report").use(fanout_stage).build()
 
 
 async def run_example() -> CustomerReport:
-    runtime = Runtime()
-    try:
-        return await runtime.run_async(workflow, CustomerIds(ids=[1, 2, 3]))
-    finally:
-        runtime.shutdown()
-
-
-def main() -> None:
-    result = asyncio.run(run_example())
-    print(result)
+    async with Runtime() as runtime:
+        return await runtime.run_async(workflow, [1, 2, 3])
 
 
 if __name__ == "__main__":
-    main()
+    print(asyncio.run(run_example()))

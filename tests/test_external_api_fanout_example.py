@@ -1,25 +1,17 @@
 import asyncio
 
-from _example_loader import load_example_module
+from examples import external_api_fanout as example
 
 from py_interceptors import Runtime
 
 
 def test_external_api_fanout_example_builds_customer_report() -> None:
-    example = load_example_module("external_api_fanout")
-    runtime = Runtime()
+    with Runtime() as runtime:
+        result = asyncio.run(runtime.run_async(example.workflow, [3, 1, 99]))
 
-    try:
-        result = asyncio.run(
-            runtime.run_async(example.workflow, example.CustomerIds(ids=[3, 1, 99]))
-        )
-    finally:
-        runtime.shutdown()
-
-    assert [profile.customer_id for profile in result.profiles] == [1, 3, 99]
-    assert [profile.name for profile in result.profiles] == [
-        "Ada",
-        "Grace",
-        "Unknown",
+    assert [(p.customer_id, p.name) for p in result.profiles] == [
+        (1, "Ada"),
+        (3, "Grace"),
+        (99, "Unknown"),
     ]
     assert result.premium_count == 2
