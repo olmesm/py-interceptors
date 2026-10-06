@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import types
 import typing
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -30,51 +31,18 @@ def _require_name(name: str, type_name: str) -> str:
     return name
 
 
-def _interceptor_dependency_hints(
-    interceptor_cls: type[Interceptor[Any, Any]],
-) -> Mapping[str, object]:
-    """
-    Return the subset of class-level annotations that describe **required**
-    injectable dependencies. An annotation is considered a required
-    dependency when:
-
-    - It is not a reserved framework attribute (``name``, ``input_type``,
-      ``output_type``).
-    - It is not private (does not start with an underscore).
-    - It is not a ``ClassVar``.
-    - The class does not provide a default value for that attribute on any
-      class in its MRO. Annotations with a class-level default are treated
-      as optional: descendants may still override them via ``provide(...)``,
-      but missing them does not raise.
-    """
-
-    all_hints = _interceptor_all_dependency_hints(interceptor_cls)
-    return MappingProxyType(
-        {
-            attr: annotation
-            for attr, annotation in all_hints.items()
-            if not _has_class_default(interceptor_cls, attr)
-        }
-    )
-
-
 def _interceptor_all_dependency_hints(
     interceptor_cls: type[Interceptor[Any, Any]],
 ) -> Mapping[str, object]:
     """
-    Like :func:`_interceptor_dependency_hints` but also includes annotations
-    that have a class-level default value. Used by the resolver so that
-    ``.provide(...)`` overrides can win over class defaults; the stricter
-    "required" view from :func:`_interceptor_dependency_hints` is used for
-    raising ``MissingDependencyError``.
+    Public, non-``ClassVar`` class annotations other than the reserved
+    metadata names. Annotations stay as strings when forward references
+    cannot be evaluated; those are matched by name only.
     """
 
     try:
         hints = get_type_hints(interceptor_cls, include_extras=True)
     except Exception:
-        # Fall back to raw __annotations__ across the MRO if PEP 563 evaluation
-        # is unable to resolve forward references. The dependency feature is
-        # best-effort in that case but still functional for resolved types.
         merged: dict[str, object] = {}
         for cls in reversed(interceptor_cls.__mro__):
             merged.update(getattr(cls, "__annotations__", {}))
@@ -93,65 +61,56 @@ def _interceptor_all_dependency_hints(
 
 
 def _has_class_default(cls: type[object], attr: str) -> bool:
-    """True when any class in ``cls``'s MRO defines ``attr`` as a real value.
-
-    Walks the MRO and treats a presence in ``__dict__`` as a default. The
-    base ``Interceptor`` class is skipped so its framework-managed metadata
-    fields are not mistaken for user-supplied defaults.
-    """
+    """True when a class in the MRO below the framework bases defines ``attr``."""
 
     for klass in cls.__mro__:
-        if klass is Interceptor or klass is object:
+        if klass in (Interceptor, StreamInterceptor, object):
             continue
         if attr in klass.__dict__:
             return True
     return False
 
 
-def _value_matches_annotation(value: object, annotation: object) -> bool:
+def _type_name(spec: object) -> str:
+    name = getattr(spec, "__name__", None)
+    if isinstance(name, str):
+        return name
+    return repr(spec)
+
+
+def _unwrap(spec: object) -> object:
+    while get_origin(spec) in (typing.Annotated, typing.ClassVar):
+        spec = get_args(spec)[0]
+    return spec
+
+
+def _is_assignable(provided: object, required: object) -> bool:
     """
-    Conservative compatibility check between a concrete value and a type
-    annotation. Mirrors the spirit of ``validation._is_assignable`` but works
-    on values rather than type specs.
+    Whether a value of type ``provided`` satisfies the type spec ``required``.
+
+    ``Any``/``object`` match everything, unions match any member, generics
+    compare by origin only (``list[int]`` satisfies ``Sequence``), and plain
+    classes compare with ``issubclass``.
     """
 
-    if annotation in (Any, object):
+    provided = _unwrap(provided)
+    required = _unwrap(required)
+    if required in (Any, object) or provided in (Any, object):
         return True
-
-    origin = get_origin(annotation)
-    if origin is typing.ClassVar:
-        # Strip ClassVar wrapper, e.g. ClassVar[Logger] -> Logger
-        args = get_args(annotation)
-        if not args:
-            return True
-        return _value_matches_annotation(value, args[0])
-    if origin is typing.Annotated:
-        args = get_args(annotation)
-        if not args:
-            return True
-        return _value_matches_annotation(value, args[0])
-
-    if origin is typing.Union or origin is type(None) or origin is None:
-        if origin is typing.Union:
-            return any(
-                _value_matches_annotation(value, arg) for arg in get_args(annotation)
-            )
-
-    if isinstance(annotation, type):
+    if provided == required:
+        return True
+    if get_origin(required) in (typing.Union, types.UnionType):
+        return any(_is_assignable(provided, arg) for arg in get_args(required))
+    if get_origin(provided) in (typing.Union, types.UnionType):
+        return all(_is_assignable(arg, required) for arg in get_args(provided))
+    provided_cls = get_origin(provided) or provided
+    required_cls = get_origin(required) or required
+    if isinstance(provided_cls, type) and isinstance(required_cls, type):
         try:
-            return isinstance(value, annotation)
+            return issubclass(provided_cls, required_cls)
         except TypeError:
             return False
-
-    if origin is not None and isinstance(origin, type):
-        try:
-            return isinstance(value, origin)
-        except TypeError:
-            return False
-
-    # Anything we cannot reason about runtime-checks-wise is accepted; later
-    # validation phases may still reject it.
-    return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,9 +150,7 @@ def _check_direct_bindings(
 ) -> None:
     """Validate ``.use(Cls, **kwargs)`` at the call site."""
 
-    if not kwargs:
-        return
-    hints = _interceptor_dependency_hints(interceptor_cls)
+    hints = _interceptor_all_dependency_hints(interceptor_cls)
     for name, value in kwargs.items():
         if name not in hints:
             declared = ", ".join(sorted(hints)) or "(none)"
@@ -202,18 +159,13 @@ def _check_direct_bindings(
                 f"Declared dependencies: {declared}"
             )
         annotation = hints[name]
-        if not _value_matches_annotation(value, annotation):
+        if isinstance(annotation, str):
+            continue
+        if not _is_assignable(type(value), annotation):
             raise DependencyTypeError(
                 f"{interceptor_cls.__name__}.{name} expected "
-                f"{_annotation_name(annotation)}, got {type(value).__name__}"
+                f"{_type_name(annotation)}, got {type(value).__name__}"
             )
-
-
-def _annotation_name(annotation: object) -> str:
-    name = getattr(annotation, "__name__", None)
-    if isinstance(name, str):
-        return name
-    return repr(annotation)
 
 
 def _normalize_chain_item(item: object) -> object:
@@ -359,9 +311,7 @@ class Chain[TIn, TOut]:
         *,
         _items: tuple[object, ...] | None = None,
         policy: Policy | None = None,
-        provides: (
-            Mapping[str, object] | tuple[tuple[str, object], ...] | None
-        ) = None,
+        provides: (Mapping[str, object] | tuple[tuple[str, object], ...] | None) = None,
     ) -> None:
         source_items = _items if _items is not None else ()
         normalized = tuple(_normalize_chain_item(item) for item in source_items)

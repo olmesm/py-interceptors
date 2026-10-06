@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Mapping
-from typing import Any, get_args, get_origin
+from typing import Any
 
 from py_interceptors.chains import (
     BoundInterceptor,
     Chain,
     StreamChain,
+    _has_class_default,
     _interceptor_all_dependency_hints,
-    _interceptor_dependency_hints,
+    _interceptor_cls_of,
+    _is_assignable,
     _item_input_spec,
-    _item_output_spec,
-    _value_matches_annotation,
+    _type_name,
 )
 from py_interceptors.errors import (
     AmbiguousDependencyError,
@@ -28,55 +29,6 @@ from py_interceptors.interceptors import (
 from py_interceptors.policies import AsyncPolicy, Policy, ThreadPolicy, ThreadPoolPolicy
 from py_interceptors.types import TypeSpec
 
-type _ProvideScope = Mapping[str, object]
-type _ResolutionMap = dict[int, Mapping[str, object]]
-
-
-def _type_name(spec: object) -> str:
-    name = getattr(spec, "__name__", None)
-    if isinstance(name, str):
-        return name
-    return repr(spec)
-
-
-def _is_assignable(provided: object, required: object) -> bool:
-    """
-    Conservative runtime compatibility check for validation.
-
-    Supported:
-    - normal classes via issubclass
-    - exact typing alias equality, e.g. list[str] -> list[str]
-    - object / Any as universal matches
-    """
-
-    if required in (Any, object):
-        return True
-    if provided in (Any, object):
-        return True
-    if provided == required:
-        return True
-
-    prov_origin = get_origin(provided)
-    req_origin = get_origin(required)
-
-    if isinstance(provided, type) and req_origin is provided:
-        return True
-
-    if prov_origin is not None or req_origin is not None:
-        if provided == required:
-            return True
-        if prov_origin == req_origin and prov_origin is not None:
-            return get_args(provided) == get_args(required)
-        return False
-
-    if isinstance(provided, type) and isinstance(required, type):
-        try:
-            return issubclass(provided, required)
-        except TypeError:
-            return False
-
-    return False
-
 
 def _is_async_callable(fn: object) -> bool:
     if fn is None:
@@ -91,17 +43,13 @@ def _validate_chain(
     chain: Chain[Any, Any],
     initial: TypeSpec | None,
     policies: dict[str, _PolicySignature] | None = None,
-    provide_stack: tuple[_ProvideScope, ...] = (),
-    resolution: _ResolutionMap | None = None,
+    provide_stack: tuple[Mapping[str, object], ...] = (),
 ) -> TypeSpec:
     seen_policies = policies if policies is not None else {}
     _validate_policy(chain.policy, seen_policies)
 
-    # Push this chain's provides onto the stack (nearest-first ordering).
-    chain_scope: _ProvideScope = chain.provided_bindings
-    next_stack: tuple[_ProvideScope, ...] = (
-        (chain_scope, *provide_stack) if chain_scope else provide_stack
-    )
+    chain_scope = chain.provided_bindings
+    next_stack = (chain_scope, *provide_stack) if chain_scope else provide_stack
 
     current: TypeSpec | None = initial
 
@@ -109,10 +57,9 @@ def _validate_chain(
         return current if current is not None else object
 
     for idx, item in enumerate(chain.items):
-        if isinstance(item, type) and issubclass(item, Interceptor):
-            _validate_interceptor_cls(item)
-        elif isinstance(item, BoundInterceptor):
-            _validate_interceptor_cls(item.interceptor_type)
+        step_cls = _interceptor_cls_of(item)
+        if step_cls is not None:
+            _validate_interceptor_cls(step_cls)
 
         required = _item_input_spec(item)
 
@@ -125,82 +72,63 @@ def _validate_chain(
             )
 
         if isinstance(item, Chain):
-            current = _validate_chain(
-                item, current, seen_policies, next_stack, resolution
-            )
+            current = _validate_chain(item, current, seen_policies, next_stack)
         elif isinstance(item, StreamChain):
-            current = _validate_stream_chain(
-                item, current, seen_policies, next_stack, resolution
-            )
-        else:
-            current = _item_output_spec(item)
-            if resolution is not None:
-                _resolve_step_dependencies(item, next_stack, resolution)
+            current = _validate_stream_chain(item, current, seen_policies, next_stack)
+        elif step_cls is not None:
+            direct = dict(item.kwargs) if isinstance(item, BoundInterceptor) else {}
+            resolve_step_dependencies(step_cls, direct, next_stack)
+            current = step_cls.output_type
 
     return current if current is not None else object
 
 
-def _resolve_step_dependencies(
-    item: object,
-    provide_stack: tuple[_ProvideScope, ...],
-    resolution: _ResolutionMap,
-) -> None:
+def resolve_step_dependencies(
+    interceptor_cls: type[Interceptor[Any, Any]],
+    direct: Mapping[str, object],
+    provide_stack: tuple[Mapping[str, object], ...],
+) -> dict[str, object]:
     """
-    Resolve declared dependencies for a single chain step and record the
-    fully-resolved attribute map in ``resolution`` keyed by ``id(item)``.
+    Return the attribute map to set on one instance of ``interceptor_cls``.
+
+    Direct bindings win, then the nearest ``provide_stack`` scope (name
+    match, else a single type match). A hint with a class default and no
+    binding is left to the class; any other unresolved hint raises
+    ``MissingDependencyError``.
     """
 
-    if isinstance(item, BoundInterceptor):
-        interceptor_cls = item.interceptor_type
-        direct = dict(item.kwargs)
-    elif isinstance(item, type) and issubclass(item, Interceptor):
-        interceptor_cls = item
-        direct = {}
-    else:
-        return
-
-    # Resolve against the BROADER hint set (including class-defaulted fields)
-    # so .provide(...) can override class-level defaults. The required-check
-    # pass uses the stricter set for MissingDependencyError reporting.
-    hints = _interceptor_all_dependency_hints(interceptor_cls)
-    if not hints and not direct:
-        resolution[id(item)] = {}
-        return
-
-    resolved: dict[str, object] = dict(direct)
-
-    for name, annotation in hints.items():
+    resolved = dict(direct)
+    missing: list[str] = []
+    for name, annotation in _interceptor_all_dependency_hints(interceptor_cls).items():
         if name in resolved:
             continue
         value, found = _resolve_from_provide_stack(
-            interceptor_cls=interceptor_cls,
-            attr_name=name,
-            annotation=annotation,
-            provide_stack=provide_stack,
+            interceptor_cls, name, annotation, provide_stack
         )
         if found:
             resolved[name] = value
-
-    # Note: we do not raise MissingDependencyError for unresolved hints here.
-    # Many interceptor attributes are not framework-managed dependencies
-    # (e.g. ``state: dict[str, int] = {}`` on the class). A dependency is
-    # only considered "missing" if the user explicitly tried to bind it via
-    # .provide() but no descendant resolved it -- which is hard to detect
-    # without explicit declarations. Today we silently leave unresolved
-    # attributes alone; the user gets a clear AttributeError if their
-    # interceptor tries to read one. See docs/dependencies.md.
-    resolution[id(item)] = resolved
+        elif not _has_class_default(interceptor_cls, name):
+            missing.append(name)
+    if missing:
+        raise MissingDependencyError(
+            f"{interceptor_cls.__name__} is missing required "
+            f"dependencies: {', '.join(sorted(missing))}. Bind them at "
+            f".use({interceptor_cls.__name__}, ...) or supply them via "
+            f".provide(...) on this chain or an ancestor."
+        )
+    return resolved
 
 
 def _resolve_from_provide_stack(
     interceptor_cls: type[Interceptor[Any, Any]],
     attr_name: str,
     annotation: object,
-    provide_stack: tuple[_ProvideScope, ...],
+    provide_stack: tuple[Mapping[str, object], ...],
 ) -> tuple[object, bool]:
     """
     Walk providers from nearest to root. Prefer a name match (``attr_name``);
-    fall back to a single type match at the same scope. Raise on type
+    fall back to a single type match at the same scope. A string annotation
+    (unresolved forward reference) matches by name only. Raise on type
     mismatch or same-scope ambiguity. Return ``(value, True)`` on success,
     ``(None, False)`` if no provider matched.
     """
@@ -208,107 +136,42 @@ def _resolve_from_provide_stack(
     for scope in provide_stack:
         if attr_name in scope:
             value = scope[attr_name]
-            if not _value_matches_annotation(value, annotation):
+            if not isinstance(annotation, str) and not _is_assignable(
+                type(value), annotation
+            ):
                 raise DependencyTypeError(
                     f"{interceptor_cls.__name__}.{attr_name} expected "
-                    f"{_annotation_name(annotation)}, got "
+                    f"{_type_name(annotation)}, got "
                     f"{type(value).__name__} from a parent provide(...)"
                 )
             return value, True
+        if isinstance(annotation, str):
+            continue
 
-        # Type-only fallback at this scope.
-        candidates: list[tuple[str, object]] = []
-        for provided_name, provided_value in scope.items():
-            if _value_matches_annotation(provided_value, annotation):
-                candidates.append((provided_name, provided_value))
+        candidates = [
+            name
+            for name, value in scope.items()
+            if _is_assignable(type(value), annotation)
+        ]
         if len(candidates) == 1:
-            return candidates[0][1], True
+            return scope[candidates[0]], True
         if len(candidates) > 1:
-            names = ", ".join(sorted(n for n, _ in candidates))
             raise AmbiguousDependencyError(
                 f"{interceptor_cls.__name__}.{attr_name} "
-                f"({_annotation_name(annotation)}) matches multiple values "
-                f"in a single provide(...) scope: {names}. Bind explicitly "
-                f"with .use({interceptor_cls.__name__}, {attr_name}=...) or "
-                f"rename the provide kwarg."
+                f"({_type_name(annotation)}) matches multiple values "
+                f"in a single provide(...) scope: {', '.join(sorted(candidates))}. "
+                f"Bind explicitly with .use({interceptor_cls.__name__}, "
+                f"{attr_name}=...) or rename the provide kwarg."
             )
 
     return None, False
-
-
-def _annotation_name(annotation: object) -> str:
-    name = getattr(annotation, "__name__", None)
-    if isinstance(name, str):
-        return name
-    return repr(annotation)
-
-
-def build_resolution_map(chain: Chain[Any, Any]) -> _ResolutionMap:
-    """
-    Walk ``chain`` and return a map of ``id(step) -> {attr: value}`` for every
-    bound or class-only interceptor step, applying nearest-wins resolution
-    against the chain's ``.provide(...)`` scopes. Raises on missing required
-    bindings only when a step is explicitly bound and a declared field cannot
-    be resolved.
-    """
-
-    resolution: _ResolutionMap = {}
-    _validate_chain(chain, None, {}, (), resolution)
-    _check_required_bindings(chain, (), resolution)
-    return resolution
-
-
-def _check_required_bindings(
-    chain: Chain[Any, Any],
-    provide_stack: tuple[_ProvideScope, ...],
-    resolution: _ResolutionMap,
-) -> None:
-    """
-    Walk the chain tree and raise ``MissingDependencyError`` for any
-    interceptor whose declared (no-default) dependency annotations could not
-    be resolved from either a direct binding or any ancestor ``.provide``.
-    """
-
-    chain_scope = chain.provided_bindings
-    next_stack: tuple[_ProvideScope, ...] = (
-        (chain_scope, *provide_stack) if chain_scope else provide_stack
-    )
-
-    for item in chain.items:
-        if isinstance(item, Chain):
-            _check_required_bindings(item, next_stack, resolution)
-            continue
-        if isinstance(item, StreamChain):
-            if item.processor is not None:
-                _check_required_bindings(item.processor, next_stack, resolution)
-            continue
-        if isinstance(item, BoundInterceptor):
-            interceptor_cls = item.interceptor_type
-        elif isinstance(item, type) and issubclass(item, Interceptor):
-            interceptor_cls = item
-        else:
-            continue
-
-        hints = _interceptor_dependency_hints(interceptor_cls)
-        if not hints:
-            continue
-        resolved = resolution.get(id(item), {})
-        missing = sorted(name for name in hints if name not in resolved)
-        if missing:
-            raise MissingDependencyError(
-                f"{interceptor_cls.__name__} is missing required "
-                f"dependencies: {', '.join(missing)}. Bind them at "
-                f".use({interceptor_cls.__name__}, ...) or supply them via "
-                f".provide(...) on this chain or an ancestor."
-            )
 
 
 def _validate_stream_chain(
     stream_chain: StreamChain[Any, Any, Any, Any],
     initial: TypeSpec | None,
     policies: dict[str, _PolicySignature],
-    provide_stack: tuple[_ProvideScope, ...] = (),
-    resolution: _ResolutionMap | None = None,
+    provide_stack: tuple[Mapping[str, object], ...] = (),
 ) -> TypeSpec:
     _validate_policy(stream_chain.policy, policies)
 
@@ -331,7 +194,7 @@ def _validate_stream_chain(
         )
 
     processor_out = _validate_chain(
-        processor, opener.emit_type, policies, provide_stack, resolution
+        processor, opener.emit_type, policies, provide_stack
     )
 
     if not _is_assignable(processor_out, opener.collect_type):
@@ -348,7 +211,9 @@ def _validate_interceptor_cls(step_cls: type[Interceptor[Any, Any]]) -> None:
     _validate_step_name(step_cls, "Interceptor")
     _reject_legacy_metadata(step_cls, ("Input", "Output"))
     missing = [
-        attr for attr in ("input_type", "output_type") if attr not in step_cls.__dict__
+        attr
+        for attr in ("input_type", "output_type")
+        if not _has_class_default(step_cls, attr)
     ]
     if missing:
         raise ValidationError(
@@ -365,7 +230,7 @@ def _validate_stream_interceptor_cls(
     missing_metadata = [
         attr
         for attr in ("input_type", "emit_type", "collect_type", "output_type")
-        if attr not in step_cls.__dict__
+        if not _has_class_default(step_cls, attr)
     ]
     if missing_metadata:
         raise ValidationError(
@@ -468,11 +333,8 @@ def _chain_body_is_async(chain: Chain[Any, Any]) -> bool:
                 return True
             continue
 
-        if (
-            isinstance(item, type)
-            and issubclass(item, Interceptor)
-            and _interceptor_cls_is_async(item)
-        ):
+        step_cls = _interceptor_cls_of(item)
+        if step_cls is not None and _interceptor_cls_is_async(step_cls):
             return True
 
     return False

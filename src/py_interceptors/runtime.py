@@ -36,11 +36,11 @@ from py_interceptors.validation import (
     _chain_is_async,
     _stream_chain_body_is_async,
     _validate_chain,
-    build_resolution_map,
+    resolve_step_dependencies,
 )
 
 type PolicyKey = tuple[type[object], str]
-type _CompileCacheKey = tuple[Chain[Any, Any], TypeSpec | None]
+type _CompileCacheKey = tuple[int, TypeSpec | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,12 +186,10 @@ class Runtime:
         init=False,
         repr=False,
     )
-    _resolution_var: contextvars.ContextVar[
-        dict[int, Mapping[str, object]] | None
-    ] = field(
+    _provide_var: contextvars.ContextVar[tuple[Mapping[str, object], ...]] = field(
         default_factory=lambda: contextvars.ContextVar(
-            "py_interceptors_resolution",
-            default=None,
+            "py_interceptors_provides",
+            default=(),
         ),
         init=False,
         repr=False,
@@ -251,10 +249,7 @@ class Runtime:
         initial: TypeSpec | None = None,
     ) -> CompiledPlan[TIn, TOut]:
         """Validate and cache an executable plan for ``chain``."""
-        cache_key = self._compile_cache_key(chain, initial)
-        if cache_key is None:
-            return self._compile_uncached(chain, initial)
-
+        cache_key: _CompileCacheKey = (id(chain), initial)
         with self._compile_lock:
             cached = self._compiled_plans.get(cache_key)
             if cached is not None:
@@ -271,7 +266,6 @@ class Runtime:
     ) -> CompiledPlan[TIn, TOut]:
         try:
             final_output = _validate_chain(chain, initial)
-            resolution = build_resolution_map(chain)
         except ValidationError:
             raise
         except Exception as err:
@@ -285,20 +279,7 @@ class Runtime:
             input_spec=root_input,
             output_spec=final_output,
             is_async=async_required,
-            resolution=resolution,
         )
-
-    @staticmethod
-    def _compile_cache_key(
-        chain: Chain[Any, Any],
-        initial: TypeSpec | None,
-    ) -> _CompileCacheKey | None:
-        key = (chain, initial)
-        try:
-            hash(key)
-        except TypeError:
-            return None
-        return key
 
     async def run_async[TIn, TOut](self, chain: Chain[TIn, TOut], payload: TIn) -> TOut:
         """Compile if needed, then execute ``chain`` asynchronously."""
@@ -343,43 +324,47 @@ class Runtime:
         return future.result()
 
     def _get_default_portal(self) -> _AsyncPortalRunner:
-        name = "py-interceptors-default"
-        portal = self._async_portals.get(name)
-        if portal is None:
-            portal = _AsyncPortalRunner(name)
-            self._async_portals[name] = portal
-        return portal
+        return self._portal("py-interceptors-default")
 
     def get_executor(self, policy: ThreadPolicy | ThreadPoolPolicy) -> Executor:
         """Return the runtime-owned executor for a thread policy."""
-        if isinstance(policy, ThreadPolicy):
-            executor = self._thread_lanes.get(policy.name)
+        with self._compile_lock:
+            if isinstance(policy, ThreadPolicy):
+                executor = self._thread_lanes.get(policy.name)
+                if executor is None:
+                    executor = ThreadPoolExecutor(
+                        max_workers=1, thread_name_prefix=policy.name
+                    )
+                    self._thread_lanes[policy.name] = executor
+                return executor
+
+            executor = self._thread_pools.get(policy.name)
             if executor is None:
                 executor = ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix=policy.name
+                    max_workers=policy.workers,
+                    thread_name_prefix=policy.name,
                 )
-                self._thread_lanes[policy.name] = executor
+                self._thread_pools[policy.name] = executor
+            elif executor._max_workers != policy.workers:
+                raise ExecutionError(
+                    f"ThreadPoolPolicy {policy.name!r} already exists with "
+                    f"workers={executor._max_workers}; got workers={policy.workers}"
+                )
             return executor
-
-        executor = self._thread_pools.get(policy.name)
-        if executor is None:
-            executor = ThreadPoolExecutor(
-                max_workers=policy.workers,
-                thread_name_prefix=policy.name,
-            )
-            self._thread_pools[policy.name] = executor
-        return executor
 
     def get_async_portal(self, policy: AsyncPolicy) -> _AsyncPortalRunner:
         """Return the runtime-owned isolated async portal for ``policy``."""
         if policy.name is None:
             raise ExecutionError("Isolated AsyncPolicy requires a named portal")
+        return self._portal(policy.name)
 
-        portal = self._async_portals.get(policy.name)
-        if portal is None:
-            portal = _AsyncPortalRunner(policy.name)
-            self._async_portals[policy.name] = portal
-        return portal
+    def _portal(self, name: str) -> _AsyncPortalRunner:
+        with self._compile_lock:
+            portal = self._async_portals.get(name)
+            if portal is None:
+                portal = _AsyncPortalRunner(name)
+                self._async_portals[name] = portal
+            return portal
 
     def shutdown(self, wait: bool = True) -> None:
         """Shutdown runtime-owned resources and clear compiled-plan caches."""
@@ -417,7 +402,8 @@ class Runtime:
         active_path = path if path is not None else (*self._path_var.get(), chain.name)
         path_token = self._path_var.set(active_path)
         try:
-            return self._run_chain_sync_at_path(chain, payload, inherited_policy)
+            with self._provide_scope(chain):
+                return self._run_chain_sync_at_path(chain, payload, inherited_policy)
         finally:
             self._path_var.reset(path_token)
 
@@ -681,11 +667,12 @@ class Runtime:
         active_path = path if path is not None else (*self._path_var.get(), chain.name)
         path_token = self._path_var.set(active_path)
         try:
-            return await self._run_chain_async_at_path(
-                chain,
-                payload,
-                inherited_policy,
-            )
+            with self._provide_scope(chain):
+                return await self._run_chain_async_at_path(
+                    chain,
+                    payload,
+                    inherited_policy,
+                )
         finally:
             self._path_var.reset(path_token)
 
@@ -935,38 +922,57 @@ class Runtime:
         emitted_items: list[Any],
         inherited_policy: Policy | None,
     ) -> list[Any]:
-        parallelism = self._map_parallelism_sync(processor, inherited_policy)
         processor_path = (*self._path_var.get(), processor.name)
 
-        if parallelism <= 1:
-            return [
-                self._run_chain_sync(processor, item, inherited_policy, processor_path)
-                for item in emitted_items
-            ]
+        def run_one(item: Any) -> Any:
+            return self._run_chain_sync(
+                processor, item, inherited_policy, processor_path
+            )
 
         policy = processor.policy or inherited_policy
         if not isinstance(policy, ThreadPoolPolicy):
-            return [
-                self._run_chain_sync(processor, item, inherited_policy, processor_path)
-                for item in emitted_items
-            ]
+            return [run_one(item) for item in emitted_items]
 
+        results: list[Any] = [None] * len(emitted_items)
+        pending = iter(enumerate(emitted_items))
+        lock = threading.Lock()
+        failures: list[Exception] = []
+
+        def drain() -> None:
+            while not failures:
+                with lock:
+                    index, item = next(pending, (None, None))
+                if index is None:
+                    return
+                try:
+                    results[index] = run_one(item)
+                except Exception as err:
+                    failures.append(err)
+                    return
+
+        holds_worker = self._is_current_policy(policy)
+        helpers = min(policy.workers, len(emitted_items)) - int(holds_worker)
         executor = self.get_executor(policy)
-        futures: list[Future[Any]] = [
+        key = self._policy_key(policy)
+        futures = [
             executor.submit(
                 contextvars.copy_context().run,
                 self._call_with_policy_key,
-                self._policy_key(policy),
-                lambda item=item: self._run_chain_sync(
-                    processor,
-                    item,
-                    inherited_policy,
-                    processor_path,
-                ),
+                key,
+                drain,
             )
-            for item in emitted_items
+            for _ in range(helpers)
         ]
-        return [future.result() for future in futures]
+        if holds_worker:
+            drain()
+            for future in futures:
+                future.cancel()
+        for future in futures:
+            if not future.cancelled():
+                future.result()
+        if failures:
+            raise failures[0]
+        return results
 
     async def _map_stream_items_async(
         self,
@@ -987,30 +993,21 @@ class Runtime:
 
         if parallelism == 1:
             return [await run_one(item) for item in emitted_items]
-        if parallelism is None:
-            return list(
-                await asyncio.gather(*(run_one(item) for item in emitted_items))
-            )
 
-        semaphore = asyncio.Semaphore(parallelism)
+        semaphore = asyncio.Semaphore(parallelism or len(emitted_items))
 
         async def bounded(item: Any) -> Any:
             async with semaphore:
                 return await run_one(item)
 
-        return list(await asyncio.gather(*(bounded(item) for item in emitted_items)))
-
-    def _map_parallelism_sync(
-        self,
-        processor: Chain[Any, Any],
-        inherited_policy: Policy | None,
-    ) -> int:
-        effective_policy = processor.policy or inherited_policy
-        if isinstance(effective_policy, ThreadPoolPolicy):
-            if self._is_current_policy(effective_policy):
-                return 1
-            return effective_policy.workers
-        return 1
+        try:
+            async with asyncio.TaskGroup() as group:
+                tasks = [group.create_task(bounded(item)) for item in emitted_items]
+        except ExceptionGroup as err:
+            if len(err.exceptions) == 1:
+                raise err.exceptions[0] from None
+            raise
+        return [task.result() for task in tasks]
 
     def _map_parallelism_async(
         self,
@@ -1528,43 +1525,28 @@ class Runtime:
         self,
         item: type[Interceptor[Any, Any]] | BoundInterceptor,
     ) -> Interceptor[Any, Any]:
-        """
-        Instantiate an interceptor step and inject its resolved dependencies.
-
-        The active ``CompiledPlan`` pushes a ``{id(step): {attr: value}}`` map
-        onto the runtime resolution context before execution. Bare
-        ``Interceptor`` classes whose declared annotations were resolved from
-        an ancestor ``.provide(...)`` are injected here too.
-        """
-
+        direct: Mapping[str, object] = {}
         if isinstance(item, BoundInterceptor):
             interceptor_cls = item.interceptor_type
+            direct = dict(item.kwargs)
         else:
             interceptor_cls = item
 
         instance = self._instantiate(interceptor_cls)
-
-        resolution = self._resolution_var.get()
-        if resolution is None:
-            return instance
-        bindings = resolution.get(id(item))
-        if not bindings:
-            return instance
-        for attr, value in bindings.items():
+        resolved = resolve_step_dependencies(
+            interceptor_cls, direct, self._provide_var.get()
+        )
+        for attr, value in resolved.items():
             setattr(instance, attr, value)
         return instance
 
     @contextmanager
-    def _active_resolution(
-        self,
-        resolution: Mapping[int, Mapping[str, object]] | None,
-    ) -> Iterator[None]:
-        """Bind ``resolution`` for the duration of a plan execution."""
-
-        token = self._resolution_var.set(
-            cast(dict[int, Mapping[str, object]] | None, resolution)
-        )
+    def _provide_scope(self, chain: Chain[Any, Any]) -> Iterator[None]:
+        if not chain.provides:
+            yield
+            return
+        token = self._provide_var.set((dict(chain.provides), *self._provide_var.get()))
         try:
             yield
         finally:
-            self._resolution_var.reset(token)
+            self._provide_var.reset(token)
