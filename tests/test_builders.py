@@ -1,100 +1,28 @@
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable
 from typing import assert_type
 
 import pytest
+from doubles import (
+    AddOne,
+    DoubleAdded,
+    Doubled,
+    NumberItem,
+    Numbers,
+    SplitNumbers,
+    Square,
+    SquaredItem,
+    Start,
+    Total,
+)
 
 from py_interceptors import (
     Chain,
-    Interceptor,
     Runtime,
     StreamChain,
-    StreamInterceptor,
     ThreadPolicy,
     chain,
     stream_chain,
 )
-
-
-@dataclass
-class Start:
-    value: int
-
-
-@dataclass
-class Added:
-    value: int
-    added: int
-
-
-@dataclass
-class Doubled:
-    value: int
-    added: int
-    doubled: int
-
-
-@dataclass
-class Numbers:
-    items: list[int]
-
-
-@dataclass
-class NumberItem:
-    value: int
-
-
-@dataclass
-class SquaredItem:
-    value: int
-    squared: int
-
-
-@dataclass
-class Total:
-    total: int
-
-
-class AddOne(Interceptor[Start, Added]):
-    input_type = Start
-    output_type = Added
-
-    def enter(self, ctx: Start) -> Added:
-        return Added(value=ctx.value, added=ctx.value + 1)
-
-
-class DoubleAdded(Interceptor[Added, Doubled]):
-    input_type = Added
-    output_type = Doubled
-
-    def enter(self, ctx: Added) -> Doubled:
-        return Doubled(
-            value=ctx.value,
-            added=ctx.added,
-            doubled=ctx.added * 2,
-        )
-
-
-class SplitNumbers(StreamInterceptor[Numbers, NumberItem, SquaredItem, Total]):
-    input_type = Numbers
-    emit_type = NumberItem
-    collect_type = SquaredItem
-    output_type = Total
-
-    def stream(self, ctx: Numbers) -> Iterable[NumberItem]:
-        for item in ctx.items:
-            yield NumberItem(value=item)
-
-    def collect(self, ctx: Numbers, items: Iterable[SquaredItem]) -> Total:
-        return Total(total=sum(item.squared for item in items))
-
-
-class Square(Interceptor[NumberItem, SquaredItem]):
-    input_type = NumberItem
-    output_type = SquaredItem
-
-    def enter(self, ctx: NumberItem) -> SquaredItem:
-        return SquaredItem(value=ctx.value, squared=ctx.value * ctx.value)
 
 
 def test_chain_builder_infers_types_and_runs() -> None:
@@ -107,18 +35,15 @@ def test_chain_builder_infers_types_and_runs() -> None:
     )
     assert_type(workflow, Chain[Start, Doubled])
 
-    runtime = Runtime()
-    try:
+    with Runtime() as runtime:
         result = runtime.run_sync(workflow, Start(value=3))
-    finally:
-        runtime.shutdown()
 
     assert result == Doubled(value=3, added=4, doubled=8)
     assert workflow.policy == ThreadPolicy("builder-main")
 
 
 def test_stream_chain_builder_infers_types_and_runs() -> None:
-    per_item = chain("square").use(Square).on(ThreadPolicy("builder-worker")).build()
+    per_item = chain("square").use(Square).build()
     assert_type(per_item, Chain[NumberItem, SquaredItem])
 
     stream_stage = (
@@ -133,37 +58,49 @@ def test_stream_chain_builder_infers_types_and_runs() -> None:
     workflow = chain("sum of squares").use(stream_stage).build()
     assert_type(workflow, Chain[Numbers, Total])
 
-    runtime = Runtime()
-    try:
+    with Runtime() as runtime:
         result = runtime.run_sync(workflow, Numbers(items=[1, 2, 3]))
-    finally:
-        runtime.shutdown()
 
     assert result == Total(total=14)
     assert stream_stage.policy == ThreadPolicy("builder-stream")
 
 
-def test_chains_require_names() -> None:
-    with pytest.raises(TypeError):
-        Chain()  # type: ignore[call-arg]
-
-    with pytest.raises(TypeError):
-        StreamChain()  # type: ignore[call-arg]
-
-    with pytest.raises(TypeError):
-        chain()  # type: ignore[call-arg]
-
-    with pytest.raises(TypeError):
-        stream_chain()  # type: ignore[call-arg]
-
+@pytest.mark.parametrize("make", [Chain, StreamChain, chain, stream_chain])
+def test_chains_require_a_non_empty_name(make: Callable[[str], object]) -> None:
     with pytest.raises(ValueError, match="non-empty name"):
-        Chain("")
+        make("")
 
-    with pytest.raises(ValueError, match="non-empty name"):
-        StreamChain("")
 
-    with pytest.raises(ValueError, match="non-empty name"):
-        chain("")
+SPLIT = StreamChain[Numbers, NumberItem, SquaredItem, Total]("split")
 
-    with pytest.raises(ValueError, match="non-empty name"):
-        stream_chain("")
+
+@pytest.mark.parametrize(
+    ("build", "message"),
+    [
+        pytest.param(
+            lambda: Chain("math").use(42),  # type: ignore[call-overload]
+            "Chain items must be Interceptor classes",
+            id="chain-use-non-item",
+        ),
+        pytest.param(
+            lambda: StreamChain("split").stream(Square),  # type: ignore[arg-type]
+            "requires a StreamInterceptor class",
+            id="stream-non-opener",
+        ),
+        pytest.param(
+            lambda: SPLIT.stream(SplitNumbers).stream(SplitNumbers),
+            "may only be called once",
+            id="stream-twice",
+        ),
+        pytest.param(
+            lambda: StreamChain("split").map(42),  # type: ignore[call-overload]
+            "requires an Interceptor class or a Chain",
+            id="map-non-item",
+        ),
+    ],
+)
+def test_chain_construction_rejects_wrong_items(
+    build: Callable[[], object], message: str
+) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        build()
