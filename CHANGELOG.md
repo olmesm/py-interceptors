@@ -2,6 +2,16 @@
 
 <!-- version list -->
 
+## v0.2.0 (2026-10-06)
+
+### Refactoring
+
+- collapse builders, dedupe the runtime, drop unused public names ([`1cdf643`](https://github.com/olmesm/py-interceptors/commit/1cdf643f2c26c42d577a87a474f6eb78dca8499e))
+
+### Breaking Changes
+
+- Portal, ExecutionPolicy, Context, CompilationError, Runtime.startup() and Runtime.validate() are removed. Policies take plain string names. Policy (the union) is exported in their place. Use `async with Runtime()` instead of startup(). BoundInterceptor is no longer exported.
+
 ## v0.1.1 (2026-10-06)
 
 ### Bug Fixes
