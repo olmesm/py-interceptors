@@ -31,17 +31,23 @@ testpaths = [
 ]
 
 [tool.semantic_release]
-# Single source of truth for the version.
 version_toml = ["pyproject.toml:project.version"]
-branch = "main"
-build_command = ""  # build handled by `uv build` in the workflow
-commit_message = "chore(release): {version}\n\nAutomated release by python-semantic-release."
+build_command = ""
+commit_message = "chore(release): {version}"
 tag_format = "v{version}"
-changelog_file = "CHANGELOG.md"
-upload_to_vcs_release = true
+major_on_zero = false
+
+[tool.semantic_release.changelog]
+mode = "update"
+insertion_flag = "<!-- version list -->"
+template_dir = "templates"
+exclude_commit_patterns = ["^(ci|style|chore|test|build)(\\(.*\\))?:"]
+
+[tool.semantic_release.changelog.environment]
+trim_blocks = true
+lstrip_blocks = true
 
 [tool.semantic_release.commit_parser_options]
-# Conventional Commits → version bumps
 allowed_tags = [
     "feat", "fix", "perf", "refactor", "docs", "style",
     "test", "build", "ci", "chore", "revert",
