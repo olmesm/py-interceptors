@@ -23,7 +23,7 @@ from types import TracebackType
 from typing import Any, Self, cast
 
 from py_interceptors.chains import BoundInterceptor, Chain, StreamChain
-from py_interceptors.errors import ExecutionError
+from py_interceptors.errors import ExecutionError, ValidationError
 from py_interceptors.interceptors import Interceptor
 from py_interceptors.plan import CompiledPlan
 from py_interceptors.policies import (
@@ -240,6 +240,11 @@ class Runtime:
         initial: TypeSpec | None = None,
     ) -> CompiledPlan[TIn, TOut]:
         """Validate and cache an executable plan for ``chain``."""
+        if not isinstance(chain, Chain):
+            raise ValidationError(
+                f"Runtime expects a Chain but received {type(chain).__name__}; "
+                "wrap a StreamChain in chain(...).use(stage).build()"
+            )
         cache_key: _CompileCacheKey = (id(chain), initial)
         with self._lock:
             cached = self._compiled_plans.get(cache_key)
