@@ -141,9 +141,6 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         owns_runtime = runtime is None
         workflow_runtime = runtime or Runtime()
-        if owns_runtime:
-            await workflow_runtime.startup()
-
         workflow_runtime.compile(workflow, initial=ApiContext)
         app.state.workflow_runtime = workflow_runtime
 

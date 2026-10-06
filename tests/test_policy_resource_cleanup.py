@@ -407,10 +407,7 @@ async def _run_parallel_and_shutdown(
 
 
 def _snapshot_resources(runtime: Runtime) -> ResourceSnapshot:
-    executors = (
-        *runtime._thread_lanes.values(),
-        *runtime._thread_pools.values(),
-    )
+    executors = tuple(runtime._executors.values())
     threads: list[threading.Thread] = []
 
     for executor in executors:
@@ -433,8 +430,7 @@ def _assert_runtime_resources_released(
     snapshot: ResourceSnapshot,
     case: str,
 ) -> None:
-    assert runtime._thread_lanes == {}
-    assert runtime._thread_pools == {}
+    assert runtime._executors == {}
     assert runtime._async_portals == {}
     assert runtime._compiled_plans == {}
 

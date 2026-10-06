@@ -11,7 +11,6 @@ from py_interceptors import (
     AsyncPolicy,
     Chain,
     Interceptor,
-    Portal,
     Runtime,
     ThreadPolicy,
     ThreadPoolPolicy,
@@ -140,21 +139,6 @@ class FailingAsyncPortal(Interceptor[Work, Work]):
         raise ValueError("portal failed")
 
 
-def test_policies_accept_portal_identity() -> None:
-    portal = Portal("shared")
-    inner: Chain[Work, Work] = (
-        Chain("inner").use(Identity).on(ThreadPoolPolicy(portal, workers=2))
-    )
-    workflow: Chain[Work, Work] = (
-        Chain[Work, Work]("outer").use(inner).on(ThreadPoolPolicy("shared", workers=2))
-    )
-
-    compiled = Runtime().compile(workflow, initial=Work)
-
-    assert compiled.input_spec is Work
-    assert compiled.output_spec is Work
-
-
 def test_runtime_sync_context_manager_shuts_down_thread_resources() -> None:
     workflow: Chain[Work, Work] = (
         Chain("identity").use(Identity).on(ThreadPolicy("lane"))
@@ -163,9 +147,9 @@ def test_runtime_sync_context_manager_shuts_down_thread_resources() -> None:
     with Runtime() as runtime:
         result = runtime.run_sync(workflow, Work(1, [], []))
         assert result.value == 1
-        assert runtime._thread_lanes["lane"] is not None
+        assert runtime._executors[(ThreadPolicy, "lane")] is not None
 
-    assert runtime._thread_lanes == {}
+    assert runtime._executors == {}
 
 
 def test_runtime_sync_context_manager_shuts_down_on_exception() -> None:
@@ -181,7 +165,7 @@ def test_runtime_sync_context_manager_shuts_down_on_exception() -> None:
             raise RuntimeError("fail")
 
     assert runtime is not None
-    assert runtime._thread_lanes == {}
+    assert runtime._executors == {}
 
 
 def test_runtime_async_context_manager_shuts_down_isolated_portals() -> None:
@@ -234,7 +218,6 @@ def test_runtime_async_lifecycle_methods_shutdown_isolated_portals() -> None:
 
     async def run() -> tuple[Runtime, threading.Thread]:
         runtime = Runtime()
-        await runtime.startup()
         result = await runtime.run_async(workflow, Work(1, [], []))
         portal_thread = runtime._async_portals["io"]._thread
         assert result.thread_names == ["io"]
@@ -415,7 +398,7 @@ def test_isolated_async_policy_runs_on_dedicated_loop_thread() -> None:
         Chain("isolated")
         .use(RecordAsyncPortal)
         .use(RecordAsyncPortal)
-        .on(AsyncPolicy(Portal("async-io"), isolated=True))
+        .on(AsyncPolicy("async-io", isolated=True))
     )
     portal_thread: threading.Thread | None = None
 

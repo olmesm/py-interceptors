@@ -424,9 +424,6 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         owns_runtime = runtime is None
         enrichment_runtime = runtime or Runtime()
-        if owns_runtime:
-            await enrichment_runtime.startup()
-
         enrichment_runtime.compile(workflow, initial=EnrichmentRequest)
         app.state.enrichment_runtime = enrichment_runtime
         try:

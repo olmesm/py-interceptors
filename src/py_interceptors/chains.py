@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import types
 import typing
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field, replace
-from types import MappingProxyType
+from collections.abc import Mapping
+from dataclasses import KW_ONLY, dataclass, replace
 from typing import Any, Self, get_args, get_origin, get_type_hints, overload
 
 from py_interceptors.errors import (
@@ -31,9 +30,9 @@ def _require_name(name: str, type_name: str) -> str:
     return name
 
 
-def _interceptor_all_dependency_hints(
+def _dependency_hints(
     interceptor_cls: type[Interceptor[Any, Any]],
-) -> Mapping[str, object]:
+) -> dict[str, object]:
     """
     Public, non-``ClassVar`` class annotations other than the reserved
     metadata names. Annotations stay as strings when forward references
@@ -43,21 +42,17 @@ def _interceptor_all_dependency_hints(
     try:
         hints = get_type_hints(interceptor_cls, include_extras=True)
     except Exception:
-        merged: dict[str, object] = {}
+        hints = {}
         for cls in reversed(interceptor_cls.__mro__):
-            merged.update(getattr(cls, "__annotations__", {}))
-        hints = merged
+            hints.update(getattr(cls, "__annotations__", {}))
 
-    deps: dict[str, object] = {}
-    for attr, annotation in hints.items():
-        if attr in _RESERVED_INTERCEPTOR_ATTRS:
-            continue
-        if attr.startswith("_"):
-            continue
-        if get_origin(annotation) is typing.ClassVar:
-            continue
-        deps[attr] = annotation
-    return MappingProxyType(deps)
+    return {
+        attr: annotation
+        for attr, annotation in hints.items()
+        if attr not in _RESERVED_INTERCEPTOR_ATTRS
+        and not attr.startswith("_")
+        and get_origin(annotation) is not typing.ClassVar
+    }
 
 
 def _has_class_default(cls: type[object], attr: str) -> bool:
@@ -121,27 +116,12 @@ class BoundInterceptor:
     Stored inside ``Chain._items`` whenever ``.use(Cls, **kwargs)`` is called
     with at least one keyword argument. The runtime injects ``kwargs`` as
     attributes on a freshly-instantiated interceptor before ``enter`` is
-    invoked.
-
-    ``kwargs`` are stored as a tuple of ``(name, value)`` pairs so the
-    dataclass remains hashable when the dependency values themselves are
-    hashable. Use the ``bindings`` property for a read-only mapping view.
+    invoked. ``kwargs`` are stored as a tuple of ``(name, value)`` pairs so
+    the dataclass remains hashable when the dependency values are.
     """
 
     interceptor_type: type[Interceptor[Any, Any]]
     kwargs: tuple[tuple[str, object], ...] = ()
-
-    @property
-    def bindings(self) -> Mapping[str, object]:
-        return MappingProxyType(dict(self.kwargs))
-
-    @property
-    def input_type(self) -> TypeSpec:
-        return self.interceptor_type.input_type
-
-    @property
-    def output_type(self) -> TypeSpec:
-        return self.interceptor_type.output_type
 
 
 def _check_direct_bindings(
@@ -150,7 +130,7 @@ def _check_direct_bindings(
 ) -> None:
     """Validate ``.use(Cls, **kwargs)`` at the call site."""
 
-    hints = _interceptor_all_dependency_hints(interceptor_cls)
+    hints = _dependency_hints(interceptor_cls)
     for name, value in kwargs.items():
         if name not in hints:
             declared = ", ".join(sorted(hints)) or "(none)"
@@ -168,14 +148,20 @@ def _check_direct_bindings(
             )
 
 
-def _normalize_chain_item(item: object) -> object:
-    if isinstance(item, Chain):
-        return item
-    if isinstance(item, StreamChain):
-        return item
-    if isinstance(item, BoundInterceptor):
-        return item
+def _bind_item(item: object, kwargs: Mapping[str, object]) -> object:
+    """Validate one ``use(...)`` argument and return the item to store."""
+
     if isinstance(item, type) and issubclass(item, Interceptor):
+        if not kwargs:
+            return item
+        _check_direct_bindings(item, kwargs)
+        return BoundInterceptor(item, tuple(kwargs.items()))
+    if kwargs:
+        raise TypeError(
+            "use(...) only accepts keyword arguments for Interceptor "
+            "classes. Use provide(...) on a Chain to supply dependencies."
+        )
+    if isinstance(item, (Chain, StreamChain, BoundInterceptor)):
         return item
     raise TypeError(
         "Chain items must be Interceptor classes, BoundInterceptor instances, "
@@ -201,76 +187,22 @@ def _interceptor_cls_of(item: object) -> type[Interceptor[Any, Any]] | None:
     return None
 
 
-@overload
-def _item_input_spec[TIn](item: InterceptorCls[TIn, Any]) -> TypeSpec: ...
-
-
-@overload
-def _item_input_spec[TIn](item: Chain[TIn, Any]) -> TypeSpec: ...
-
-
-@overload
-def _item_input_spec[TIn](item: StreamChain[TIn, Any, Any, Any]) -> TypeSpec: ...
-
-
-@overload
-def _item_input_spec(item: object) -> TypeSpec: ...
-
-
 def _item_input_spec(item: object) -> TypeSpec:
-    if isinstance(item, Chain):
+    if isinstance(item, (Chain, StreamChain)):
         return item.input_spec
-    if isinstance(item, StreamChain):
-        return item.input_spec
-    if isinstance(item, BoundInterceptor):
-        return item.interceptor_type.input_type
-    if isinstance(item, type) and issubclass(item, Interceptor):
-        return item.input_type
-    raise TypeError(f"Unsupported chain item: {item!r}")
-
-
-@overload
-def _item_output_spec[TOut](item: InterceptorCls[Any, TOut]) -> TypeSpec: ...
-
-
-@overload
-def _item_output_spec[TOut](item: Chain[Any, TOut]) -> TypeSpec: ...
-
-
-@overload
-def _item_output_spec[TOut](item: StreamChain[Any, Any, Any, TOut]) -> TypeSpec: ...
-
-
-@overload
-def _item_output_spec(item: object) -> TypeSpec: ...
+    step_cls = _interceptor_cls_of(item)
+    if step_cls is None:
+        raise TypeError(f"Unsupported chain item: {item!r}")
+    return step_cls.input_type
 
 
 def _item_output_spec(item: object) -> TypeSpec:
-    if isinstance(item, Chain):
+    if isinstance(item, (Chain, StreamChain)):
         return item.output_spec
-    if isinstance(item, StreamChain):
-        return item.output_spec
-    if isinstance(item, BoundInterceptor):
-        return item.interceptor_type.output_type
-    if isinstance(item, type) and issubclass(item, Interceptor):
-        return item.output_type
-    raise TypeError(f"Unsupported chain item: {item!r}")
-
-
-def _freeze_provides(
-    provides: Mapping[str, object] | tuple[tuple[str, object], ...] | None,
-) -> tuple[tuple[str, object], ...]:
-    if not provides:
-        return ()
-    if isinstance(provides, tuple):
-        return provides
-    return tuple(provides.items())
-
-
-def _provides_mapping(
-    provides: tuple[tuple[str, object], ...],
-) -> Mapping[str, object]:
-    return MappingProxyType(dict(provides))
+    step_cls = _interceptor_cls_of(item)
+    if step_cls is None:
+        raise TypeError(f"Unsupported chain item: {item!r}")
+    return step_cls.output_type
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,29 +233,13 @@ class Chain[TIn, TOut]:
     """
 
     name: str
-    _items: tuple[object, ...] = field(default_factory=tuple)
+    _: KW_ONLY
+    _items: tuple[object, ...] = ()
     policy: Policy | None = None
     provides: tuple[tuple[str, object], ...] = ()
 
-    def __init__(
-        self,
-        name: str,
-        *,
-        _items: tuple[object, ...] | None = None,
-        policy: Policy | None = None,
-        provides: (Mapping[str, object] | tuple[tuple[str, object], ...] | None) = None,
-    ) -> None:
-        source_items = _items if _items is not None else ()
-        normalized = tuple(_normalize_chain_item(item) for item in source_items)
-        object.__setattr__(self, "name", _require_name(name, "Chain"))
-        object.__setattr__(self, "_items", normalized)
-        object.__setattr__(self, "policy", policy)
-        object.__setattr__(self, "provides", _freeze_provides(provides))
-
-    @property
-    def provided_bindings(self) -> Mapping[str, object]:
-        """Read-only mapping view of dependencies this chain provides."""
-        return _provides_mapping(self.provides)
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _require_name(self.name, "Chain"))
 
     @property
     def items(self) -> tuple[object, ...]:
@@ -346,20 +262,17 @@ class Chain[TIn, TOut]:
 
     @overload
     def use[TNext](
-        self: Chain[TIn, TOut],
+        self,
         item: InterceptorCls[TOut, TNext],
         **kwargs: Any,
     ) -> Chain[TIn, TNext]: ...
 
     @overload
-    def use[TNext](
-        self: Chain[TIn, TOut],
-        item: Chain[TOut, TNext],
-    ) -> Chain[TIn, TNext]: ...
+    def use[TNext](self, item: Chain[TOut, TNext]) -> Chain[TIn, TNext]: ...
 
     @overload
     def use[TNext](
-        self: Chain[TIn, TOut],
+        self,
         item: StreamChain[TOut, Any, Any, TNext],
     ) -> Chain[TIn, TNext]: ...
 
@@ -373,20 +286,7 @@ class Chain[TIn, TOut]:
         on the appropriate chain instead.
         """
 
-        if kwargs and not (isinstance(item, type) and issubclass(item, Interceptor)):
-            raise TypeError(
-                "use(...) only accepts keyword arguments for Interceptor "
-                "classes. Use provide(...) on a Chain to supply dependencies."
-            )
-        if isinstance(item, type) and issubclass(item, Interceptor) and kwargs:
-            _check_direct_bindings(item, kwargs)
-            normalized: object = BoundInterceptor(
-                interceptor_type=item,
-                kwargs=tuple(kwargs.items()),
-            )
-        else:
-            normalized = _normalize_chain_item(item)
-        return replace(self, _items=(*self._items, normalized))
+        return replace(self, _items=(*self._items, _bind_item(item, kwargs)))
 
     def on(self, policy: Policy) -> Self:
         """Return a new chain that runs under ``policy`` unless overridden."""
@@ -401,12 +301,11 @@ class Chain[TIn, TOut]:
 
         if not kwargs:
             return self
-        merged = dict(self.provides)
-        merged.update(kwargs)
-        return replace(self, provides=tuple(merged.items()))
+        return replace(self, provides=tuple({**dict(self.provides), **kwargs}.items()))
 
-    def __iter__(self) -> Iterable[object]:
-        return iter(self._items)
+    def build(self) -> Self:
+        """Return this chain; kept so builder-style call sites read the same."""
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -501,237 +400,102 @@ class StreamChain[TIn, TEmit, TCollect, TOut]:
 
     @overload
     def map(
-        self: StreamChain[TIn, TEmit, TCollect, TOut],
+        self,
         item: InterceptorCls[TEmit, TCollect],
     ) -> StreamChain[TIn, TEmit, TCollect, TOut]: ...
 
     @overload
     def map(
-        self: StreamChain[TIn, TEmit, TCollect, TOut],
+        self,
         item: Chain[TEmit, TCollect],
     ) -> StreamChain[TIn, TEmit, TCollect, TOut]: ...
 
     def map(self, item: object) -> StreamChain[Any, Any, Any, Any]:
         """Return a new stream chain with ``item`` mapped over emitted values."""
-        processor = _normalize_stream_item(item)
-        return replace(self, processor=processor)
+        return replace(self, processor=_normalize_stream_item(item))
 
     def on(self, policy: Policy) -> Self:
         """Return a new stream chain that runs under ``policy``."""
         return replace(self, policy=policy)
 
+    def build(self) -> Self:
+        """Return this stream chain; kept so builder-style call sites read the same."""
+        return self
+
 
 @dataclass(frozen=True, slots=True)
 class _EmptyChainBuilder:
-    name: str
-    policy: Policy | None = None
-    provides: tuple[tuple[str, object], ...] = ()
+    """``chain(name)`` before its first ``use``: the first item fixes ``TIn``."""
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _require_name(self.name, "chain"))
-        object.__setattr__(self, "provides", _freeze_provides(self.provides))
+    _chain: Chain[Any, Any]
 
     @overload
     def use[TFirst, TNext](
         self,
         item: InterceptorCls[TFirst, TNext],
         **kwargs: Any,
-    ) -> _ChainBuilder[TFirst, TNext]: ...
+    ) -> Chain[TFirst, TNext]: ...
 
     @overload
     def use[TFirst, TNext](
-        self,
-        item: Chain[TFirst, TNext],
-    ) -> _ChainBuilder[TFirst, TNext]: ...
+        self, item: Chain[TFirst, TNext]
+    ) -> Chain[TFirst, TNext]: ...
 
     @overload
     def use[TFirst, TNext](
         self,
         item: StreamChain[TFirst, Any, Any, TNext],
-    ) -> _ChainBuilder[TFirst, TNext]: ...
+    ) -> Chain[TFirst, TNext]: ...
 
-    def use(self, item: object, **kwargs: object) -> _ChainBuilder[Any, Any]:
-        if kwargs and not (isinstance(item, type) and issubclass(item, Interceptor)):
-            raise TypeError(
-                "use(...) only accepts keyword arguments for Interceptor "
-                "classes. Use provide(...) on the chain builder to supply "
-                "dependencies."
-            )
-        if isinstance(item, type) and issubclass(item, Interceptor) and kwargs:
-            _check_direct_bindings(item, kwargs)
-            normalized: object = BoundInterceptor(
-                interceptor_type=item,
-                kwargs=tuple(kwargs.items()),
-            )
-        else:
-            normalized = _normalize_chain_item(item)
-        return _ChainBuilder(
-            name=self.name,
-            _items=(normalized,),
-            policy=self.policy,
-            provides=self.provides,
-        )
+    def use(self, item: object, **kwargs: object) -> Chain[Any, Any]:
+        return replace(self._chain, _items=(_bind_item(item, kwargs),))
 
-    def on(self, policy: Policy) -> _EmptyChainBuilder:
-        return replace(self, policy=policy)
+    def on(self, policy: Policy) -> Self:
+        return replace(self, _chain=self._chain.on(policy))
 
-    def provide(self, **kwargs: object) -> _EmptyChainBuilder:
-        if not kwargs:
-            return self
-        merged = dict(self.provides)
-        merged.update(kwargs)
-        return replace(self, provides=tuple(merged.items()))
-
-
-@dataclass(frozen=True, slots=True)
-class _ChainBuilder[TIn, TOut]:
-    name: str
-    _items: tuple[object, ...] = field(default_factory=tuple)
-    policy: Policy | None = None
-    provides: tuple[tuple[str, object], ...] = ()
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _require_name(self.name, "chain"))
-        object.__setattr__(self, "provides", _freeze_provides(self.provides))
-
-    @overload
-    def use[TNext](
-        self,
-        item: InterceptorCls[TOut, TNext],
-        **kwargs: Any,
-    ) -> _ChainBuilder[TIn, TNext]: ...
-
-    @overload
-    def use[TNext](
-        self,
-        item: Chain[TOut, TNext],
-    ) -> _ChainBuilder[TIn, TNext]: ...
-
-    @overload
-    def use[TNext](
-        self,
-        item: StreamChain[TOut, Any, Any, TNext],
-    ) -> _ChainBuilder[TIn, TNext]: ...
-
-    def use(self, item: object, **kwargs: object) -> _ChainBuilder[Any, Any]:
-        if kwargs and not (isinstance(item, type) and issubclass(item, Interceptor)):
-            raise TypeError(
-                "use(...) only accepts keyword arguments for Interceptor "
-                "classes. Use provide(...) on the chain builder to supply "
-                "dependencies."
-            )
-        if isinstance(item, type) and issubclass(item, Interceptor) and kwargs:
-            _check_direct_bindings(item, kwargs)
-            normalized: object = BoundInterceptor(
-                interceptor_type=item,
-                kwargs=tuple(kwargs.items()),
-            )
-        else:
-            normalized = _normalize_chain_item(item)
-        return replace(self, _items=(*self._items, normalized))
-
-    def on(self, policy: Policy) -> _ChainBuilder[TIn, TOut]:
-        return replace(self, policy=policy)
-
-    def provide(self, **kwargs: object) -> _ChainBuilder[TIn, TOut]:
-        if not kwargs:
-            return self
-        merged = dict(self.provides)
-        merged.update(kwargs)
-        return replace(self, provides=tuple(merged.items()))
-
-    def build(self) -> Chain[TIn, TOut]:
-        return Chain(
-            self.name,
-            _items=self._items,
-            policy=self.policy,
-            provides=self.provides,
-        )
+    def provide(self, **kwargs: object) -> Self:
+        return replace(self, _chain=self._chain.provide(**kwargs))
 
 
 @dataclass(frozen=True, slots=True)
 class _EmptyStreamChainBuilder:
-    name: str
-    policy: Policy | None = None
+    """``stream_chain(name)`` before ``stream``: the opener fixes all four types."""
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _require_name(self.name, "stream_chain"))
+    _chain: StreamChain[Any, Any, Any, Any]
 
     def stream[TIn, TEmit, TCollect, TOut](
         self,
         opener: StreamInterceptorCls[TIn, TEmit, TCollect, TOut],
     ) -> _StreamMapBuilder[TIn, TEmit, TCollect, TOut]:
-        if not isinstance(opener, type) or not issubclass(opener, StreamInterceptor):
-            raise TypeError(
-                "StreamChain.stream(...) requires a StreamInterceptor class"
-            )
-        return _StreamMapBuilder(
-            name=self.name,
-            opener=opener,
-            policy=self.policy,
-        )
+        return _StreamMapBuilder(self._chain.stream(opener))
 
-    def on(self, policy: Policy) -> _EmptyStreamChainBuilder:
-        return replace(self, policy=policy)
+    def on(self, policy: Policy) -> Self:
+        return replace(self, _chain=self._chain.on(policy))
 
 
 @dataclass(frozen=True, slots=True)
 class _StreamMapBuilder[TIn, TEmit, TCollect, TOut]:
-    opener: StreamInterceptorCls[TIn, TEmit, TCollect, TOut]
-    name: str
-    policy: Policy | None = None
+    """A stream chain with its opener set, waiting for ``map``."""
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _require_name(self.name, "stream_chain"))
+    _chain: StreamChain[TIn, TEmit, TCollect, TOut]
 
     @overload
     def map(
         self,
         item: InterceptorCls[TEmit, TCollect],
-    ) -> _MappedStreamChainBuilder[TIn, TEmit, TCollect, TOut]: ...
+    ) -> StreamChain[TIn, TEmit, TCollect, TOut]: ...
 
     @overload
     def map(
         self,
         item: Chain[TEmit, TCollect],
-    ) -> _MappedStreamChainBuilder[TIn, TEmit, TCollect, TOut]: ...
+    ) -> StreamChain[TIn, TEmit, TCollect, TOut]: ...
 
-    def map(self, item: object) -> _MappedStreamChainBuilder[Any, Any, Any, Any]:
-        processor = _normalize_stream_item(item)
-        return _MappedStreamChainBuilder(
-            name=self.name,
-            opener=self.opener,
-            processor=processor,
-            policy=self.policy,
-        )
+    def map(self, item: object) -> StreamChain[Any, Any, Any, Any]:
+        return replace(self._chain, processor=_normalize_stream_item(item))
 
-    def on(self, policy: Policy) -> _StreamMapBuilder[TIn, TEmit, TCollect, TOut]:
-        return replace(self, policy=policy)
-
-
-@dataclass(frozen=True, slots=True)
-class _MappedStreamChainBuilder[TIn, TEmit, TCollect, TOut]:
-    opener: StreamInterceptorCls[TIn, TEmit, TCollect, TOut]
-    processor: Chain[TEmit, TCollect]
-    name: str
-    policy: Policy | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _require_name(self.name, "stream_chain"))
-
-    def on(
-        self,
-        policy: Policy,
-    ) -> _MappedStreamChainBuilder[TIn, TEmit, TCollect, TOut]:
-        return replace(self, policy=policy)
-
-    def build(self) -> StreamChain[TIn, TEmit, TCollect, TOut]:
-        return StreamChain(
-            name=self.name,
-            opener=self.opener,
-            processor=self.processor,
-            policy=self.policy,
-        )
+    def on(self, policy: Policy) -> Self:
+        return replace(self, _chain=self._chain.on(policy))
 
 
 def chain(name: str) -> _EmptyChainBuilder:
@@ -764,7 +528,7 @@ def chain(name: str) -> _EmptyChainBuilder:
         >>> result
         42
     """
-    return _EmptyChainBuilder(name=name)
+    return _EmptyChainBuilder(Chain(name))
 
 
 def stream_chain(name: str) -> _EmptyStreamChainBuilder:
@@ -811,4 +575,4 @@ def stream_chain(name: str) -> _EmptyStreamChainBuilder:
         >>> result
         'hello-world'
     """
-    return _EmptyStreamChainBuilder(name=name)
+    return _EmptyStreamChainBuilder(StreamChain(name))

@@ -43,13 +43,6 @@ class MissingOutput(Interceptor[Start, Start]):
     input_type = Start
 
 
-class LegacyMetadata(Interceptor[Start, Start]):
-    Input = Start
-    Output = Start
-    input_type = Start
-    output_type = Start
-
-
 class EmptyName(Interceptor[Start, Start]):
     name = ""
     input_type = Start
@@ -145,13 +138,6 @@ def test_compile_rejects_interceptor_missing_output_metadata() -> None:
     workflow: Chain[Start, Start] = Chain("bad").use(MissingOutput)
 
     with pytest.raises(ValidationError, match="output_type"):
-        Runtime().compile(workflow, initial=Start)
-
-
-def test_compile_rejects_legacy_uppercase_metadata() -> None:
-    workflow: Chain[Start, Start] = Chain("bad").use(LegacyMetadata)
-
-    with pytest.raises(ValidationError, match="legacy metadata"):
         Runtime().compile(workflow, initial=Start)
 
 

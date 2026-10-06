@@ -8,8 +8,8 @@ from py_interceptors.chains import (
     BoundInterceptor,
     Chain,
     StreamChain,
+    _dependency_hints,
     _has_class_default,
-    _interceptor_all_dependency_hints,
     _interceptor_cls_of,
     _is_assignable,
     _item_input_spec,
@@ -26,36 +26,27 @@ from py_interceptors.interceptors import (
     InterceptorCls,
     StreamInterceptor,
 )
-from py_interceptors.policies import AsyncPolicy, Policy, ThreadPolicy, ThreadPoolPolicy
+from py_interceptors.policies import AsyncPolicy, Policy
 from py_interceptors.types import TypeSpec
 
 
 def _is_async_callable(fn: object) -> bool:
-    if fn is None:
-        return False
     return inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn)
-
-
-type _PolicySignature = tuple[str, int | bool | None]
 
 
 def _validate_chain(
     chain: Chain[Any, Any],
     initial: TypeSpec | None,
-    policies: dict[str, _PolicySignature] | None = None,
+    policies: dict[str, Policy] | None = None,
     provide_stack: tuple[Mapping[str, object], ...] = (),
 ) -> TypeSpec:
     seen_policies = policies if policies is not None else {}
     _validate_policy(chain.policy, seen_policies)
 
-    chain_scope = chain.provided_bindings
+    chain_scope = dict(chain.provides)
     next_stack = (chain_scope, *provide_stack) if chain_scope else provide_stack
 
     current: TypeSpec | None = initial
-
-    if not chain.items:
-        return current if current is not None else object
-
     for idx, item in enumerate(chain.items):
         step_cls = _interceptor_cls_of(item)
         if step_cls is not None:
@@ -99,7 +90,7 @@ def resolve_step_dependencies(
 
     resolved = dict(direct)
     missing: list[str] = []
-    for name, annotation in _interceptor_all_dependency_hints(interceptor_cls).items():
+    for name, annotation in _dependency_hints(interceptor_cls).items():
         if name in resolved:
             continue
         value, found = _resolve_from_provide_stack(
@@ -170,7 +161,7 @@ def _resolve_from_provide_stack(
 def _validate_stream_chain(
     stream_chain: StreamChain[Any, Any, Any, Any],
     initial: TypeSpec | None,
-    policies: dict[str, _PolicySignature],
+    policies: dict[str, Policy],
     provide_stack: tuple[Mapping[str, object], ...] = (),
 ) -> TypeSpec:
     _validate_policy(stream_chain.policy, policies)
@@ -209,7 +200,6 @@ def _validate_stream_chain(
 
 def _validate_interceptor_cls(step_cls: type[Interceptor[Any, Any]]) -> None:
     _validate_step_name(step_cls, "Interceptor")
-    _reject_legacy_metadata(step_cls, ("Input", "Output"))
     missing = [
         attr
         for attr in ("input_type", "output_type")
@@ -226,7 +216,6 @@ def _validate_stream_interceptor_cls(
     step_cls: type[StreamInterceptor[Any, Any, Any, Any]],
 ) -> None:
     _validate_step_name(step_cls, "StreamInterceptor")
-    _reject_legacy_metadata(step_cls, ("Input", "Emit", "Collect", "Output"))
     missing_metadata = [
         attr
         for attr in ("input_type", "emit_type", "collect_type", "output_type")
@@ -260,59 +249,17 @@ def _validate_step_name(step_cls: type[object], type_name: str) -> None:
         )
 
 
-def _reject_legacy_metadata(
-    step_cls: type[object],
-    legacy_names: tuple[str, ...],
-) -> None:
-    found = [name for name in legacy_names if name in step_cls.__dict__]
-    if found:
+def _validate_policy(policy: Policy | None, policies: dict[str, Policy]) -> None:
+    """Every use of one policy name in a workflow must declare the same policy."""
+
+    if policy is None or policy.name is None:
+        return
+    existing = policies.setdefault(policy.name, policy)
+    if existing != policy:
         raise ValidationError(
-            f"{step_cls.__name__} uses legacy metadata: "
-            + ", ".join(found)
-            + ". Use lowercase *_type metadata."
+            f"Policy '{policy.name}' has conflicting declarations: "
+            f"{existing!r} and {policy!r}"
         )
-
-
-def _validate_policy(
-    policy: Policy | None,
-    policies: dict[str, _PolicySignature],
-) -> None:
-    if policy is None:
-        return
-
-    name = policy.name
-    if name is None:
-        return
-
-    signature = _policy_signature(policy)
-    existing = policies.get(name)
-    if existing is None:
-        policies[name] = signature
-        return
-
-    if existing != signature:
-        raise ValidationError(
-            f"Policy portal '{name}' has conflicting declarations: "
-            f"{_policy_signature_name(existing)} and "
-            f"{_policy_signature_name(signature)}"
-        )
-
-
-def _policy_signature(policy: Policy) -> _PolicySignature:
-    if isinstance(policy, ThreadPolicy):
-        return ("thread", None)
-    if isinstance(policy, ThreadPoolPolicy):
-        return ("thread-pool", policy.workers)
-    return ("async", policy.isolated)
-
-
-def _policy_signature_name(signature: _PolicySignature) -> str:
-    kind, value = signature
-    if kind == "thread-pool":
-        return f"ThreadPoolPolicy(workers={value})"
-    if kind == "async":
-        return f"AsyncPolicy(isolated={value})"
-    return "ThreadPolicy"
 
 
 def _chain_is_async(chain: Chain[Any, Any]) -> bool:
@@ -329,7 +276,9 @@ def _chain_body_is_async(chain: Chain[Any, Any]) -> bool:
             continue
 
         if isinstance(item, StreamChain):
-            if _stream_chain_is_async(item):
+            if isinstance(item.policy, AsyncPolicy) or _stream_chain_body_is_async(
+                item
+            ):
                 return True
             continue
 
@@ -340,28 +289,17 @@ def _chain_body_is_async(chain: Chain[Any, Any]) -> bool:
     return False
 
 
-def _stream_chain_is_async(stream_chain: StreamChain[Any, Any, Any, Any]) -> bool:
-    if isinstance(stream_chain.policy, AsyncPolicy):
-        return True
-    return _stream_chain_body_is_async(stream_chain)
-
-
 def _stream_chain_body_is_async(
     stream_chain: StreamChain[Any, Any, Any, Any],
 ) -> bool:
-    if stream_chain.opener is None:
-        return False
-    if stream_chain.processor is None:
-        return False
-
     opener = stream_chain.opener
-    if _is_async_callable(opener.stream):
+    if opener is None or stream_chain.processor is None:
+        return False
+    if any(
+        _is_async_callable(getattr(opener, method))
+        for method in ("stream", "collect", "error")
+    ):
         return True
-    if _is_async_callable(opener.collect):
-        return True
-    if _is_async_callable(opener.error):
-        return True
-
     return _chain_is_async(stream_chain.processor)
 
 

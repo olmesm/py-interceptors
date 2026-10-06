@@ -6,25 +6,6 @@ from typing import ClassVar
 from py_interceptors.types import MaybeAsyncIterable, MaybeAwaitable, TypeSpec
 
 
-class Context:
-    """
-    Optional marker base class for user payload/context objects.
-
-    Users may subclass this, but it is not required.
-
-    Example:
-        >>> from dataclasses import dataclass
-        >>> from py_interceptors import Context
-        >>>
-        >>> @dataclass
-        ... class Request(Context):
-        ...     user_id: int
-        ...
-        >>> isinstance(Request(user_id=42), Context)
-        True
-    """
-
-
 class Interceptor[TIn, TOut]:
     """
     One-in, one-out workflow step.
