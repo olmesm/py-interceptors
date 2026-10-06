@@ -66,14 +66,14 @@ jobs:
           vcs_release: false
       - if: steps.semrel.outputs.released == 'true'
         run: uv build
-      - name: Publish to PyPI
-        if: steps.semrel.outputs.released == 'true'
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
       - name: GitHub release
         if: steps.semrel.outputs.released == 'true'
         uses: python-semantic-release/publish-action@v9
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ steps.semrel.outputs.tag }}
+      - name: Publish to PyPI
+        if: steps.semrel.outputs.released == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
