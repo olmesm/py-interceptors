@@ -39,10 +39,17 @@ class ThreadPoolPolicy:
 @dataclass(frozen=True, slots=True)
 class AsyncPolicy:
     """
-    Default/main async runtime when name is None.
+    Run stages on an event loop.
 
-    Named isolated async portals are owned and reused by each Runtime instance.
-    ``isolated=True`` requires a non-empty name.
+    With ``isolated=False`` (the default) stages run on the loop that is
+    already driving the workflow: the caller's loop under ``run_async``, or
+    the runtime's own loop under ``run_blocking``. A name given here only
+    takes part in the same-name conflict check during validation.
+
+    With ``isolated=True`` stages run on a runtime-owned event loop in a
+    thread named after the policy. Each Runtime starts one per name on first
+    use, shares it between chains with that name, and stops it in
+    ``shutdown()``. ``isolated=True`` requires a non-empty name.
     """
 
     name: str | None = None

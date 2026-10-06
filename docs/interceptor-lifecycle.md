@@ -1,37 +1,40 @@
-# Interceptor Lifecycle
+# Interceptor lifecycle
 
-`Interceptor` is the basic one-in, one-out workflow step. Each interceptor
-declares the type it expects and the type it returns.
+`Interceptor` is the one-in, one-out workflow step. Each interceptor declares
+the type it accepts and the type it returns.
 
 ```python
-class AddCountry(Interceptor[DataFrameContext, DataFrameContext]):
-    name = "add-country"
-    input_type = DataFrameContext
-    output_type = DataFrameContext
+class AddTax(Interceptor[Order, Order]):
+    name = "add-tax"
+    input_type = Order
+    output_type = Order
 
-    def enter(self, ctx: DataFrameContext) -> DataFrameContext:
+    def enter(self, ctx: Order) -> Order:
         ...
 
-    def leave(self, ctx: DataFrameContext) -> DataFrameContext:
+    def leave(self, ctx: Order) -> Order:
         ...
 
-    def error(self, ctx: DataFrameContext, err: Exception) -> DataFrameContext:
+    def error(self, ctx: Order, err: Exception) -> Order:
         ...
 ```
 
-Methods:
+All three methods are optional. The defaults return `ctx` unchanged from
+`enter` and `leave`, and re-raise `err` from `error`. Any of them may be
+`async def`; a chain that contains an async method must run with
+`run_async(...)` or `run_blocking(...)`.
 
-- `enter(ctx)` runs in chain order.
-- `leave(ctx)` runs in reverse order after successful forward execution.
-- `error(ctx, err)` runs during error unwind.
+The runtime creates a new instance of the class each time the chain runs, so
+`enter`, `leave` and `error` of one run share `self`, and nothing on `self`
+carries over to the next run. The class must be constructible with no
+arguments; if `cls()` raises, the run fails with `ExecutionError`.
+Collaborators are injected as attributes instead (see
+[Dependencies](dependencies.md)).
 
-`enter`, `leave`, and `error` may be sync or async.
+## Enter and leave order
 
-## Enter And Leave Stack
-
-Composed interceptors behave like a forward queue plus a return stack. `enter`
-runs in chain order. Each interceptor that enters successfully is pushed onto
-the stack. After the forward path completes, `leave` runs in reverse order.
+`enter` runs in chain order. Each interceptor whose `enter` returns is pushed
+onto a stack. When the forward path completes, `leave` runs in reverse order:
 
 ```python
 workflow = (
@@ -42,66 +45,74 @@ workflow = (
 )
 
 # Execution order:
-# outer enter
-# inner enter
-# inner leave
-# outer leave
+# Outer.enter
+# Inner.enter
+# Inner.leave
+# Outer.leave
 ```
 
-Each `leave` receives the current context from the forward path or from the
-inner `leave` that ran before it. It can update or replace that context before
-returning it to the next outer interceptor.
-
-This makes `leave` useful for wrapping behavior around inner work:
+The innermost `leave` receives the value the forward path ended with. Each
+`leave` returns the value for the next outer interceptor. That makes `leave` the place for work that wraps the inner steps:
 
 - timing and tracing
 - response decoration
 - cleanup after successful work
 - final normalization before returning to the caller
 
-## Error Handling
+## Error handling
 
-Only successfully entered interceptors participate in the return path.
+Only interceptors whose `enter` returned take part in the unwind. If an
+`enter` raises, that interceptor's own `leave` and `error` do not run; the
+runtime calls `error(ctx, err)` on the interceptors already on the stack, in
+reverse order.
 
-If an `enter` fails, the runtime starts error unwind over the already-entered
-stack. If an `error` handler returns normally, the error is handled and the
-remaining outer stack resumes through `leave`. If `leave` itself raises,
-execution switches to error unwind for the remaining outer stack.
+- If an `error` handler returns a value, the error is handled. The value
+  becomes the context, and the remaining outer interceptors run `leave`.
+- If an `error` handler raises, the raised exception becomes the error passed
+  to the next outer interceptor's `error`.
+- If a `leave` raises, the remaining outer interceptors switch to `error`.
 
-If an `error` handler raises, the raised exception becomes the active error for
-the next outer interceptor.
+If no handler recovers, the last exception propagates to the caller of
+`run_sync`, `run_async` or `run_blocking`.
 
-## Names And Metadata
+## Names and metadata
 
-Interceptors may set an optional `name`. If omitted, observers use the class
-name. If provided, the name must be a non-empty string.
+An interceptor may set `name`. Observers and exception notes use it, or the
+class name when it is unset. A `name` that is set must be a non-empty string;
+otherwise `compile` raises `ValidationError`.
 
-Every interceptor class used in a validated chain must declare:
-
-- `input_type`
-- `output_type`
-
-Use lowercase metadata names. Legacy `Input` and `Output` metadata is rejected
-during validation.
+`input_type` and `output_type` are required. They may be set on the class or
+inherited from a base class of your own; the `object` defaults on
+`Interceptor` itself do not count. `compile` raises `ValidationError` when one
+is missing, and also when an item's `input_type` does not accept the previous
+item's output.
 
 ## Composition
 
-Use the lowercase builders when possible:
-
 ```python
 workflow = (
-    chain("cities -> continents")
-    .use(CitiesToDataFrame)
-    .use(AddCountry)
-    .use(GroupByContinent)
+    chain("orders")
+    .use(ParseOrder)
+    .use(AddTax)
+    .use(SaveOrder)
     .build()
 )
 ```
 
-`Chain(...)` and `StreamChain(...)` remain available when you want explicit
-constructor-based composition. The lowercase builders are preferred when you
-want mypy to infer the workflow type without a variable annotation.
+`.use(...)` accepts an interceptor class, another `Chain`, or a
+`StreamChain`. A nested chain runs as one step: its interceptors enter and
+leave inside the parent's position, and its own `.on(...)` and
+`.provide(...)` apply to it and its descendants. Chains are immutable;
+`.use`, `.on` and `.provide` return a new chain, and `.build()` returns the
+chain unchanged.
 
-All chains and stream chains require a non-empty name, whether built with
-`chain(...)` / `stream_chain(...)` or constructed directly with `Chain(...)` /
-`StreamChain(...)`.
+`Chain[...]` and `StreamChain[...]` can be constructed directly when you
+write the type parameters yourself:
+
+```python
+workflow = Chain[str, int]("parse").use(ParseInt)
+```
+
+Every chain and stream chain needs a non-empty name. An empty name raises
+`ValueError` when the chain is constructed, whether through `chain(...)`,
+`stream_chain(...)`, `Chain(...)` or `StreamChain(...)`.

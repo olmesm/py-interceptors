@@ -1,10 +1,10 @@
-# Organizing Workflows
+# Organizing workflows
 
 Interceptor-heavy applications can become hard to navigate if every step lands
 in one global `interceptors.py` file. A better default is to organize by
 workflow or use case, with reusable cross-cutting interceptors kept separately.
 
-## Recommended Layout
+## Recommended layout
 
 ```text
 app/
@@ -43,7 +43,7 @@ For each workflow package:
 - `tests/`: tests next to the workflow, or mirrored under the project-level
   `tests/` directory.
 
-## Workflow Composition
+## Workflow composition
 
 The composition file should read like the workflow. If it contains branching
 logic, HTTP calls, SQL, dataframe manipulation, or other detailed work, it is
@@ -73,11 +73,11 @@ order_workflow = (
 )
 ```
 
-## Boundary Guidance
+## Boundary guidance
 
 Keep workflow-specific interceptors close to the workflow they serve. Keep
-general-purpose interceptors in a shared package only when they are genuinely
-reusable across workflows.
+general-purpose interceptors in a shared package only when more than one
+workflow uses them.
 
 Good shared interceptors include:
 
@@ -96,11 +96,12 @@ Workflow-specific interceptors should usually stay with the workflow:
 - `FetchImportFile`
 - `NormalizeRows`
 
-## Domain Boundaries
+## Domain boundaries
 
 Interceptors should usually orchestrate work rather than contain all business
 logic. In larger applications, keep domain rules and external adapters outside
-the interceptor classes:
+the interceptor classes. One way is to group by domain first, with that
+domain's workflow packages (laid out as above) under `workflows/`:
 
 ```text
 orders/
